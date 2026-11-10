@@ -1,0 +1,10 @@
+# torch is installed separately (CUDA build): pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+transformers==5.16.1
+accelerate
+mistral-common[audio]
+soundfile
+soxr
+numpy
+fastapi
+uvicorn[standard]
+python-multipart

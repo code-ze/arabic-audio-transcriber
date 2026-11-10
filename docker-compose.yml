@@ -1,0 +1,18 @@
+services:
+  transcriber:
+    build: .
+    image: arabic-transcriber
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      # Hugging Face cache on the host (model is downloaded here on first run)
+      - ${HF_CACHE:-D:/AI/huggingface}:/models
+      - ./transcripts:/app/transcripts
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped

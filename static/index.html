@@ -8,197 +8,388 @@
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #f6f5f2; --card: #ffffff; --ink: #1d1d1b; --muted: #6b6a66;
-    --line: #e4e2dc; --accent: #0f6b5c; --accent-soft: #e3f1ee; --err: #b3261e;
+    --bg: #f6f5f2; --card: #ffffff; --ink: #1d1d1b; --muted: #6b6a66; --faint: #a3a19b;
+    --line: #e4e2dc; --accent: #0f6b5c; --accent-ink: #ffffff; --accent-soft: #e3f1ee; --err: #b3261e;
+    --rec: #c62828;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #141413; --card: #1e1e1c; --ink: #ecebe6; --muted: #9a9892;
-            --line: #2f2e2b; --accent: #4fb8a4; --accent-soft: #1d302c; --err: #f2867e; }
+    :root { --bg: #141413; --card: #1e1e1c; --ink: #ecebe6; --muted: #9a9892; --faint: #6a6863;
+            --line: #2f2e2b; --accent: #4fb8a4; --accent-ink: #0d1f1b; --accent-soft: #1d302c; --err: #f2867e;
+            --rec: #ef6b6b; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink);
          font: 15px/1.55 "IBM Plex Sans Arabic", system-ui, sans-serif; }
-  main { max-width: 820px; margin: 0 auto; padding: 40px 16px 80px; }
+  main { max-width: 860px; margin: 0 auto; padding: 36px 16px 80px; }
   header h1 { font-size: 26px; margin: 0 0 4px; font-weight: 600; }
   header p { margin: 0; color: var(--muted); }
-  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted);
-          margin-top: 10px; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); margin-top: 10px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: #c9a227; }
   .dot.ready { background: var(--accent); } .dot.error { background: var(--err); }
-  #drop { margin: 28px 0; border: 2px dashed var(--line); border-radius: 14px; background: var(--card);
-          padding: 44px 16px; text-align: center; cursor: pointer; transition: .15s; }
+
+  .inputs { display: grid; grid-template-columns: 1fr auto; gap: 12px; margin: 24px 0 18px; }
+  #drop { border: 2px dashed var(--line); border-radius: 14px; background: var(--card);
+          padding: 26px 16px; text-align: center; cursor: pointer; transition: .15s; }
   #drop.over, #drop:hover { border-color: var(--accent); background: var(--accent-soft); }
-  #drop strong { display: block; font-size: 17px; margin-bottom: 4px; }
+  #drop strong { display: block; font-size: 16px; margin-bottom: 2px; }
   #drop span { color: var(--muted); font-size: 13px; }
-  .job { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
-         padding: 16px 18px; margin-bottom: 14px; }
-  .job-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
-  .name { font-weight: 500; word-break: break-all; }
-  .state { font-size: 13px; color: var(--muted); }
-  .bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 10px; overflow: hidden; }
-  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s; }
-  .text { direction: rtl; text-align: right; font-size: 19px; line-height: 2.1; margin-top: 12px;
-          max-height: 420px; overflow-y: auto; scroll-behavior: smooth; }
-  .seg { display: flex; gap: 12px; direction: rtl; padding: 2px 0; }
+  #rec { border: 1px solid var(--line); border-radius: 14px; background: var(--card); color: var(--ink);
+         padding: 0 22px; display: flex; flex-direction: column; align-items: center; justify-content: center;
+         gap: 6px; cursor: pointer; font: inherit; font-size: 14px; min-width: 120px; }
+  #rec:hover { border-color: var(--rec); }
+  #rec .mic { width: 18px; height: 18px; border-radius: 50%; background: var(--rec); }
+  #rec.on { border-color: var(--rec); color: var(--rec); }
+  #rec.on .mic { border-radius: 4px; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  @media (max-width: 560px) { .inputs { grid-template-columns: 1fr; } #rec { padding: 14px; flex-direction: row; } }
+
+  .bar-row { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+  #search { flex: 1; min-width: 200px; font: inherit; padding: 9px 12px; border-radius: 10px;
+            border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  #search:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  label.opt { font-size: 13px; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+  .count { font-size: 13px; color: var(--muted); }
+
+  .item { background: var(--card); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 10px; }
+  .item.open { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+  .head { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; padding: 13px 16px; cursor: pointer; }
+  .name { font-weight: 500; word-break: break-word; }
+  .meta { font-size: 12.5px; color: var(--muted); text-align: right; white-space: nowrap; }
+  .preview { grid-column: 1 / -1; direction: rtl; text-align: right; color: var(--muted); font-size: 14px;
+             white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item.open .preview { display: none; }
+  .preview mark { background: var(--accent-soft); color: var(--ink); border-radius: 3px; }
+  .progress { grid-column: 1 / -1; height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+  .progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  .progress.wait i { width: 30%; animation: slide 1.4s infinite ease-in-out; }
+  @keyframes slide { from { margin-left: -30%; } to { margin-left: 100%; } }
+  .err { grid-column: 1 / -1; color: var(--err); font-size: 14px; }
+
+  .body { padding: 0 16px 16px; }
+  .player { display: flex; align-items: center; gap: 10px; }
+  .player audio { flex: 1; min-width: 0; height: 36px; }
+  .text { direction: rtl; text-align: right; font-size: 19px; line-height: 2.1; margin-top: 10px;
+          max-height: 440px; overflow-y: auto; padding-left: 4px; }
+  .seg { display: flex; gap: 12px; padding: 2px 0; }
   .seg time { display: none; direction: ltr; font-size: 12px; color: var(--muted); min-width: 44px;
               padding-top: 9px; font-variant-numeric: tabular-nums; cursor: pointer; }
   .times .seg time { display: block; }
   .w { cursor: pointer; border-radius: 5px; padding: 1px 2px; transition: background .12s, color .12s; }
   .w:hover { background: var(--accent-soft); }
-  .w.said { color: var(--ink); }
-  .w.todo { color: var(--muted); }
-  .w.now { background: var(--accent); color: #fff; }
-  .player { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
-  .player audio { flex: 1; min-width: 0; height: 36px; }
-  .speed { font-size: 12px; padding: 4px 8px; min-width: 46px; }
+  .playing .w.todo { color: var(--faint); }
+  .w.now { background: var(--accent); color: var(--accent-ink); }
+  .w[contenteditable] { outline: 2px solid var(--accent); background: var(--card); color: var(--ink); cursor: text; }
+  .w.fixed { text-decoration: underline dotted var(--accent); text-underline-offset: 6px; }
+  .hint { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
   .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
-  button { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 8px; cursor: pointer;
-           border: 1px solid var(--line); background: transparent; color: var(--ink); }
-  button:hover { border-color: var(--accent); color: var(--accent); }
-  .err { color: var(--err); margin-top: 8px; font-size: 14px; }
-  label.opt { font-size: 13px; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+  button.b { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 8px; cursor: pointer;
+             border: 1px solid var(--line); background: transparent; color: var(--ink); }
+  button.b:hover { border-color: var(--accent); color: var(--accent); }
+  button.b.danger:hover { border-color: var(--err); color: var(--err); }
+  .spacer { flex: 1; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 0; }
+  #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--ink);
+           color: var(--bg); padding: 8px 16px; border-radius: 8px; font-size: 14px; opacity: 0;
+           transition: opacity .2s; pointer-events: none; }
+  #toast.show { opacity: 1; }
 </style>
 </head>
 <body>
 <main>
   <header>
     <h1>Arabic Transcriber · تفريغ الصوت</h1>
-    <p>Upload Arabic voice notes and get text back. Everything runs on this computer, so nothing is uploaded to the internet.</p>
+    <p>Arabic voice notes to text, with word-by-word playback. Runs entirely on this computer.</p>
     <div class="pill"><span class="dot" id="dot"></span><span id="mstate">Loading model…</span></div>
   </header>
 
-  <div id="drop">
-    <strong>Drop audio files here, or click to choose</strong>
-    <span>WhatsApp voice notes (.opus / .ogg), .m4a, .mp3, .wav, .aac, videos and more. Several at once is fine.</span>
-    <input id="file" type="file" accept="audio/*,video/*,.opus,.ogg,.m4a,.amr" multiple hidden>
+  <div class="inputs">
+    <div id="drop">
+      <strong>Drop audio files here, or click to choose</strong>
+      <span>WhatsApp voice notes (.opus / .ogg), .m4a, .mp3, .wav, .aac, videos. Several at once is fine.</span>
+      <input id="file" type="file" accept="audio/*,video/*,.opus,.ogg,.m4a,.amr" multiple hidden>
+    </div>
+    <button id="rec" title="Record from your microphone"><span class="mic"></span><span id="recLabel">Record</span></button>
   </div>
-  <label class="opt"><input type="checkbox" id="showTimes"> Show timestamps</label>
-  <div id="jobs" style="margin-top:16px"></div>
-</main>
-<script>
-const drop = document.getElementById('drop'), input = document.getElementById('file');
-const jobsEl = document.getElementById('jobs'), showTimes = document.getElementById('showTimes');
-const results = {};
 
+  <div class="bar-row">
+    <input id="search" type="search" placeholder="Search all transcripts…  ابحث" dir="auto">
+    <label class="opt"><input type="checkbox" id="showTimes"> Timestamps</label>
+    <span class="count" id="count"></span>
+  </div>
+  <div id="list"></div>
+</main>
+<div id="toast"></div>
+<script>
+const $ = s => document.querySelector(s);
+const listEl = $('#list'), search = $('#search'), showTimes = $('#showTimes');
+const cards = new Map();        // id -> {el, data}
+let openId = null, autoOpen = new Set();
+
+function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function fmt(t) { t = Math.max(0, Math.floor(t || 0)); const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = t % 60;
+  return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(s).padStart(2, '0'); }
+function when(iso) { const d = new Date(iso), now = new Date();
+  const same = d.toDateString() === now.toDateString();
+  return same ? d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})
+              : d.toLocaleDateString([], {day: 'numeric', month: 'short'}) + ' ' + d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}); }
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('show'), 2200); }
+
+/* ---------- model status ---------- */
+async function pollModel() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    $('#dot').className = 'dot ' + (s.status === 'ready' ? 'ready' : s.status === 'error' ? 'error' : '');
+    $('#mstate').textContent = s.status === 'ready' ? 'Model ready (Voxtral Arabic, on GPU)' + (s.queued ? ` · ${s.queued} in queue` : '')
+      : s.status === 'error' ? 'Model failed to load: ' + s.error : 'Loading model… (about 20 seconds)';
+  } catch { $('#mstate').textContent = 'Server not running — start it with start.bat'; $('#dot').className = 'dot error'; }
+}
+
+/* ---------- uploads ---------- */
+const drop = $('#drop'), input = $('#file');
 drop.onclick = () => input.click();
 input.onchange = () => { [...input.files].forEach(send); input.value = ''; };
 ['dragenter','dragover'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add('over'); }));
 ['dragleave','drop'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove('over'); }));
 drop.addEventListener('drop', ev => [...ev.dataTransfer.files].forEach(send));
-showTimes.onchange = () => document.querySelectorAll('.text').forEach(t => t.classList.toggle('times', showTimes.checked));
-
-async function pollModel() {
-  try {
-    const s = await (await fetch('/api/status')).json();
-    const dot = document.getElementById('dot'), st = document.getElementById('mstate');
-    dot.className = 'dot ' + (s.status === 'ready' ? 'ready' : s.status === 'error' ? 'error' : '');
-    st.textContent = s.status === 'ready' ? 'Model ready (Voxtral Arabic, on GPU)' :
-                     s.status === 'error' ? 'Model failed to load: ' + s.error :
-                     'Loading model… (the first run downloads ~9 GB)';
-    if (s.status === 'loading') setTimeout(pollModel, 2000);
-  } catch { setTimeout(pollModel, 3000); }
-}
-pollModel();
 
 async function send(file) {
-  const el = document.createElement('div');
-  el.className = 'job';
-  jobsEl.prepend(el);
-  render(el, { name: file.name, status: 'uploading', progress: 0 });
-  const fd = new FormData(); fd.append('file', file);
+  const fd = new FormData(); fd.append('file', file, file.name);
   try {
-    const { id } = await (await fetch('/api/upload', { method: 'POST', body: fd })).json();
-    poll(id, el);
-  } catch (e) { render(el, { name: file.name, status: 'error', error: 'Upload failed' }); }
+    const r = await fetch('/api/upload', { method: 'POST', body: fd });
+    if (!r.ok) throw 0;
+    const { id } = await r.json();
+    autoOpen.add(id);
+    refresh();
+  } catch { toast('Upload failed: ' + file.name); }
 }
 
-async function poll(id, el) {
-  const job = await (await fetch('/api/job/' + id)).json();
-  results[id] = { el, job };
-  render(el, job);
-  if (job.status === 'queued' || job.status === 'working') setTimeout(() => poll(id, el), 800);
-}
+/* ---------- microphone ---------- */
+let rec = null, recChunks = [], recT0 = 0, recTimer = 0;
+$('#rec').onclick = async () => {
+  if (rec) { rec.stop(); return; }
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch { toast('Microphone not available or permission denied'); return; }
+  const type = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm'].find(t => MediaRecorder.isTypeSupported(t)) || '';
+  rec = new MediaRecorder(stream, type ? { mimeType: type } : {});
+  recChunks = [];
+  rec.ondataavailable = e => e.data.size && recChunks.push(e.data);
+  rec.onstop = () => {
+    stream.getTracks().forEach(t => t.stop());
+    clearInterval(recTimer); $('#rec').classList.remove('on'); $('#recLabel').textContent = 'Record';
+    const blob = new Blob(recChunks, { type: rec.mimeType || 'audio/webm' });
+    rec = null;
+    if (blob.size < 2000) { toast('Recording too short'); return; }
+    const ext = blob.type.includes('ogg') ? 'ogg' : 'webm';
+    const stamp = new Date().toLocaleString([], {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'});
+    send(new File([blob], `Recording ${stamp}.${ext}`, { type: blob.type }));
+  };
+  rec.start(1000);
+  recT0 = Date.now();
+  $('#rec').classList.add('on');
+  const tick = () => $('#recLabel').textContent = 'Stop ' + fmt((Date.now() - recT0) / 1000);
+  tick(); recTimer = setInterval(tick, 500);
+};
 
-// Word-by-word playback: highlight the word being spoken, click a word to jump there.
-function wirePlayer(el) {
-  const audio = el.querySelector('audio'), box = el.querySelector('.text');
-  const spans = [...el.querySelectorAll('.w')];
-  const starts = spans.map(s => +s.dataset.s), ends = spans.map(s => +s.dataset.e);
-  let cur = -2, curActive = -2;
+/* ---------- list ---------- */
+let searchQ = '';
+search.addEventListener('input', () => { clearTimeout(search.h); search.h = setTimeout(() => { searchQ = search.value.trim(); refresh(true); }, 250); });
+showTimes.onchange = () => document.querySelectorAll('.text').forEach(t => t.classList.toggle('times', showTimes.checked));
 
-  function locate(t) {            // last word whose start <= t (binary search)
-    let lo = 0, hi = starts.length - 1, ans = -1;
-    while (lo <= hi) { const m = (lo + hi) >> 1; if (starts[m] <= t) { ans = m; lo = m + 1; } else hi = m - 1; }
-    return ans;
+async function refresh(rebuildOrder) {
+  let data;
+  try { data = await (await fetch('/api/items?q=' + encodeURIComponent(searchQ))).json(); } catch { return; }
+  const seen = new Set(data.map(d => d.id));
+  for (const [id, c] of cards) if (!seen.has(id)) { c.el.remove(); cards.delete(id); if (openId === id) openId = null; }
+  let prev = null;
+  for (const d of data) {
+    let c = cards.get(d.id);
+    if (!c) { c = { el: document.createElement('div') }; c.el.className = 'item'; cards.set(d.id, c); }
+    const was = c.data;
+    c.data = d;
+    if (!was || was.status !== d.status || was.progress !== d.progress || was.name !== d.name || was.preview !== d.preview)
+      renderHead(c);
+    const want = prev ? prev.nextSibling : listEl.firstChild;
+    if (c.el !== want) listEl.insertBefore(c.el, want);
+    prev = c.el;
+    if (d.status === 'done' && was && was.status !== 'done' && (autoOpen.has(d.id) || openId === d.id)) {
+      autoOpen.delete(d.id); open(d.id, true);
+    }
   }
+  $('#count').textContent = data.length ? `${data.length} ${searchQ ? 'match' + (data.length > 1 ? 'es' : '') : 'transcript' + (data.length > 1 ? 's' : '')}` : '';
+  if (!data.length) listEl.innerHTML = `<div class="empty">${searchQ ? 'No transcripts contain “' + esc(searchQ) + '”.' : 'No transcripts yet. Drop a voice note above or press Record.'}</div>`;
+  else listEl.querySelector('.empty')?.remove();
+}
+
+function renderHead(c) {
+  const d = c.data;
+  const labels = { queued: 'Waiting in queue…', working: 'Transcribing… ' + Math.round((d.progress || 0) * 100) + '%', error: 'Failed' };
+  const meta = d.status === 'done' ? `${fmt(d.duration)} · ${when(d.created)}` : labels[d.status] || '';
+  let preview = esc(d.preview || '');
+  if (searchQ) preview = preview.split(esc(searchQ)).join(`<mark>${esc(searchQ)}</mark>`);
+  let extra = '';
+  if (d.status === 'queued' || d.status === 'working')
+    extra = `<div class="progress ${d.status === 'queued' || !d.progress ? 'wait' : ''}"><i style="width:${Math.round((d.progress || 0) * 100)}%"></i></div>`;
+  else if (d.status === 'error') extra = `<div class="err">${esc(d.error || 'Error')}</div>`;
+  else if (d.status === 'done' && !d.preview) extra = `<div class="preview">No speech detected.</div>`;
+  let head = c.el.querySelector('.head');
+  if (!head) { head = document.createElement('div'); head.className = 'head'; c.el.prepend(head); head.onclick = () => open(d.id); }
+  head.innerHTML = `<span class="name">${esc(d.name)}</span><span class="meta">${meta}</span>` +
+    (d.preview ? `<div class="preview">${preview}</div>` : '') + extra;
+  if (d.status === 'error' && !c.el.querySelector('.body')) {
+    const b = document.createElement('div'); b.className = 'body';
+    b.innerHTML = `<div class="actions"><span class="spacer"></span><button class="b danger">Delete</button></div>`;
+    b.querySelector('button').onclick = () => del(d.id);
+    c.el.append(b);
+  }
+}
+
+/* ---------- open a transcript ---------- */
+async function open(id, force) {
+  const c = cards.get(id);
+  if (!c || c.data.status !== 'done') return;
+  if (openId === id && !force) { close(id); return; }
+  if (openId && openId !== id) close(openId);
+  const item = await (await fetch('/api/items/' + id)).json();
+  openId = id;
+  c.el.classList.add('open');
+  c.el.querySelector('.body')?.remove();
+  const b = document.createElement('div'); b.className = 'body';
+  if (!item.segments?.length) {
+    b.innerHTML = `<div class="hint">No speech was detected in this recording.</div>` + actionsHtml(false);
+  } else {
+    b.innerHTML = `<div class="player"><audio controls preload="auto" src="/api/items/${id}/audio"></audio>` +
+      `<button class="b speed" title="Playback speed">1×</button></div>` +
+      `<div class="text${showTimes.checked ? ' times' : ''}"></div>` +
+      `<div class="hint">Click a word to play from there · double-click a word to correct it</div>` + actionsHtml(true);
+  }
+  c.el.append(b);
+  wireActions(b, item);
+  if (item.segments?.length) { renderText(b.querySelector('.text'), item); wirePlayer(b); }
+}
+function close(id) {
+  const c = cards.get(id); if (!c) return;
+  c.el.querySelector('audio')?.pause();
+  c.el.classList.remove('open'); c.el.querySelector('.body')?.remove();
+  if (openId === id) openId = null;
+}
+function actionsHtml(hasText) {
+  return `<div class="actions">` + (hasText ? `<button class="b" data-a="copy">Copy text</button>
+    <button class="b" data-a="txt">Download .txt</button><button class="b" data-a="srt">Subtitles .srt</button>` : '') +
+    `<span class="spacer"></span><button class="b" data-a="rename">Rename</button><button class="b danger" data-a="del">Delete</button></div>`;
+}
+function wireActions(b, item) {
+  b.querySelectorAll('[data-a]').forEach(btn => btn.onclick = async () => {
+    const a = btn.dataset.a;
+    if (a === 'copy') {
+      const fresh = await (await fetch('/api/items/' + item.id)).json();
+      await navigator.clipboard.writeText(fresh.segments.map(s => s.text).join('\n'));
+      toast('Copied');
+    } else if (a === 'txt' || a === 'srt') location.href = `/api/items/${item.id}/export?fmt=${a}`;
+    else if (a === 'rename') {
+      const name = prompt('New name', cards.get(item.id).data.name);
+      if (name && name.trim()) { await fetch('/api/items/' + item.id, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ name }) }); refresh(); }
+    } else if (a === 'del') del(item.id);
+  });
+}
+async function del(id) {
+  if (!confirm('Delete this transcript and its audio? This cannot be undone.')) return;
+  const r = await fetch('/api/items/' + id, { method: 'DELETE' });
+  if (!r.ok) { toast((await r.json()).detail || 'Could not delete'); return; }
+  refresh();
+}
+
+function renderText(box, item) {
+  box.innerHTML = item.segments.map((s, si) =>
+    `<div class="seg"><time data-t="${s.start}">${fmt(s.start)}</time><div>` +
+    s.words.map((w, wi) => `<span class="w" data-si="${si}" data-wi="${wi}" data-s="${w.start}" data-e="${w.end}">${esc(w.text)}</span>`).join(' ') +
+    `</div></div>`).join('');
+}
+
+/* ---------- word-by-word playback + editing ---------- */
+function wirePlayer(body) {
+  const audio = body.querySelector('audio'), box = body.querySelector('.text');
+  let spans, starts, ends, cur = -2, curActive = -2, raf = 0;
+  const index = () => { spans = [...box.querySelectorAll('.w')]; starts = spans.map(s => +s.dataset.s); ends = spans.map(s => +s.dataset.e); cur = curActive = -2; };
+  index();
+
+  function locate(t) { let lo = 0, hi = starts.length - 1, ans = -1;
+    while (lo <= hi) { const m = (lo + hi) >> 1; if (starts[m] <= t) { ans = m; lo = m + 1; } else hi = m - 1; } return ans; }
   function paint() {
-    const t = audio.currentTime;
-    const i = locate(t);
+    const t = audio.currentTime, i = locate(t);
     const active = i >= 0 && t <= ends[i] + 0.25 ? i : -1;
     if (i === cur && active === curActive) return;
-    curActive = active;
-    spans.forEach((s, k) => {
-      s.classList.toggle('now', k === active);
-      s.classList.toggle('said', k <= i && k !== active);
-      s.classList.toggle('todo', k > i);
-    });
+    cur = i; curActive = active;
+    spans.forEach((s, k) => { s.classList.toggle('now', k === active); s.classList.toggle('todo', k > i); });
     if (active >= 0 && !audio.paused) {
       const s = spans[active], top = s.offsetTop - box.offsetTop;
-      if (top < box.scrollTop + 20 || top > box.scrollTop + box.clientHeight - 60)
-        box.scrollTop = top - box.clientHeight / 3;
+      if (top < box.scrollTop + 10 || top > box.scrollTop + box.clientHeight - 50)
+        box.scrollTo({ top: top - box.clientHeight / 3, behavior: 'smooth' });
     }
-    cur = i;
   }
-  let raf = 0;
   const loop = () => { paint(); raf = requestAnimationFrame(loop); };
-  audio.addEventListener('play', () => { spans.forEach(s => s.classList.add('todo')); cancelAnimationFrame(raf); loop(); });
+  audio.addEventListener('play', () => { box.classList.add('playing'); cancelAnimationFrame(raf); loop(); });
   audio.addEventListener('pause', () => { cancelAnimationFrame(raf); paint(); });
   audio.addEventListener('seeked', paint);
-  audio.addEventListener('ended', () => {
-    cancelAnimationFrame(raf); cur = curActive = -2;
-    spans.forEach(s => s.classList.remove('now', 'todo', 'said'));
+  audio.addEventListener('ended', () => { cancelAnimationFrame(raf); box.classList.remove('playing'); spans.forEach(s => s.classList.remove('now')); });
+
+  let clickTimer = 0;
+  box.addEventListener('click', e => {
+    const w = e.target.closest('.w'), tm = e.target.closest('time');
+    if (tm) { audio.currentTime = +tm.dataset.t; audio.play(); return; }
+    if (!w || w.isContentEditable) return;
+    clearTimeout(clickTimer);   // wait so a double-click doesn't also seek
+    clickTimer = setTimeout(() => { audio.currentTime = +w.dataset.s; audio.play(); }, 220);
+  });
+  box.addEventListener('dblclick', e => {
+    const w = e.target.closest('.w'); if (!w || w.isContentEditable) return;
+    clearTimeout(clickTimer); audio.pause(); edit(w);
   });
 
-  spans.forEach(s => s.onclick = () => { audio.currentTime = +s.dataset.s; audio.play(); });
-  el.querySelectorAll('time').forEach(t => t.onclick = () => { audio.currentTime = +t.dataset.t; audio.play(); });
+  function edit(w) {
+    const before = w.textContent;
+    w.contentEditable = 'true'; w.focus();
+    getSelection().selectAllChildren(w);
+    let done = false;
+    const finish = async save => {
+      if (done) return; done = true;
+      w.removeEventListener('keydown', onKey); w.removeEventListener('blur', onBlur);
+      w.removeAttribute('contenteditable');
+      const text = w.textContent.trim();
+      if (!save || text === before) { w.textContent = before; return; }
+      const id = openId;
+      const r = await fetch(`/api/items/${id}/word`, { method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ s: +w.dataset.si, w: +w.dataset.wi, text }) });
+      if (!r.ok) { w.textContent = before; toast('Could not save the change'); return; }
+      if (!text) {            // word deleted: indices shift, so redraw this transcript's text
+        const item = await (await fetch('/api/items/' + id)).json();
+        renderText(box, item); index(); toast('Word removed');
+      } else { w.textContent = text; w.classList.add('fixed'); toast('Saved'); }
+      refresh();
+    };
+    const onKey = e => { if (e.key === 'Enter') { e.preventDefault(); finish(true); } if (e.key === 'Escape') { e.preventDefault(); finish(false); } };
+    const onBlur = () => finish(true);
+    w.addEventListener('keydown', onKey); w.addEventListener('blur', onBlur);
+  }
 
-  const speeds = [1, 1.25, 1.5, 2, 0.75], sp = el.querySelector('.speed');
-  let si = 0;
+  const speeds = [1, 1.25, 1.5, 2, 0.75], sp = body.querySelector('.speed'); let si = 0;
   sp.onclick = () => { si = (si + 1) % speeds.length; audio.playbackRate = speeds[si]; sp.textContent = speeds[si] + '×'; };
 }
 
-function esc(s) { return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+/* ---------- keyboard: space = play/pause the open transcript ---------- */
+document.addEventListener('keydown', e => {
+  if (e.code !== 'Space' || e.target.closest('input, textarea, [contenteditable]')) return;
+  const a = openId && cards.get(openId)?.el.querySelector('audio'); if (!a) return;
+  e.preventDefault(); a.paused ? a.play() : a.pause();
+});
 
-function render(el, job) {
-  const labels = { uploading: 'Uploading…', queued: 'Waiting in queue…', working: 'Transcribing…',
-                   done: `Done in ${job.seconds}s`, error: 'Failed' };
-  let body = '';
-  if (job.status === 'done') {
-    if (!job.text) body = '<div class="state" style="margin-top:10px">No speech detected.</div>';
-    else {
-      body = `<div class="player"><audio controls preload="auto" src="/api/audio/${job.id}"></audio>` +
-             `<button class="speed" title="Playback speed">1×</button></div>`;
-      body += `<div class="text${showTimes.checked ? ' times' : ''}">` + job.segments.map(s =>
-        `<div class="seg"><time data-t="${s.start}">${s.label}</time><div>` +
-        (s.words.length
-          ? s.words.map(w => `<span class="w" data-s="${w.start}" data-e="${w.end}">${esc(w.text)}</span>`).join(' ')
-          : `<span class="w" data-s="${s.start}" data-e="${s.end}">${esc(s.text)}</span>`) +
-        `</div></div>`).join('') + '</div>';
-      body += `<div class="actions"><button data-a="copy">Copy text</button><button data-a="dl">Download .txt</button></div>`;
-    }
-  } else if (job.status === 'error') body = `<div class="err">${esc(job.error || 'Error')}</div>`;
-  else body = `<div class="bar"><i style="width:${Math.round((job.progress||0)*100)}%"></i></div>`;
-  el.innerHTML = `<div class="job-head"><span class="name">${esc(job.name || '')}</span><span class="state">${labels[job.status] || ''}</span></div>${body}`;
-  if (job.status === 'done' && job.text) wirePlayer(el);
-  el.querySelectorAll('.actions button').forEach(b => b.onclick = () => {
-    if (b.dataset.a === 'copy') { navigator.clipboard.writeText(job.text); b.textContent = 'Copied ✓'; }
-    else {
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([job.text], { type: 'text/plain;charset=utf-8' }));
-      a.download = (job.name || 'transcript').replace(/\.[^.]+$/, '') + '.txt'; a.click();
-    }
-  });
+/* ---------- polling ---------- */
+async function loop() {
+  await Promise.all([pollModel(), refresh()]);
+  const busy = [...cards.values()].some(c => c.data && (c.data.status === 'queued' || c.data.status === 'working'));
+  setTimeout(loop, busy || $('#dot').className !== 'dot ready' ? 1000 : 6000);
 }
+loop();
 </script>
 </body>
 </html>

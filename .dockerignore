@@ -1,4 +1,5 @@
 .venv
+data
 transcripts
 __pycache__
 *.bat

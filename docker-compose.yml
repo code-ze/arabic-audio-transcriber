@@ -4,10 +4,16 @@ services:
     image: arabic-transcriber
     ports:
       - "127.0.0.1:8765:8765"
+    environment:
+      ASR_MODEL: /model
+      DATA_DIR: /data
+      HF_HUB_OFFLINE: "1"
     volumes:
-      # Hugging Face cache on the host (model is downloaded here on first run)
-      - ${HF_CACHE:-D:/AI/huggingface}:/models
-      - ./transcripts:/app/transcripts
+      # Plain model folder on the host (download once with:
+      #   hf download mistralai/Voxtral-Mini-4B-Realtime-Arabic --exclude consolidated.safetensors --local-dir <folder>)
+      - ${MODEL_DIR:-D:/AI/models/voxtral-arabic}:/model:ro
+      # Transcripts + audio library (shared with the non-Docker app)
+      - ${DATA_DIR:-D:/AI/arabic-transcriber-data}:/data
     deploy:
       resources:
         reservations:

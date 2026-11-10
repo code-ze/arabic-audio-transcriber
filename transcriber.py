@@ -33,7 +33,7 @@ def load_audio(path: str) -> np.ndarray:
     ]
     proc = subprocess.run(cmd, capture_output=True)
     if proc.returncode != 0:
-        raise RuntimeError("ffmpeg could not read this file: " + proc.stderr.decode(errors="ignore")[-400:])
+        raise RuntimeError("Couldn't read any audio from this file. Is it a voice note or another audio/video file?")
     audio = np.frombuffer(proc.stdout, dtype=np.float32).copy()
     if audio.size == 0:
         raise RuntimeError("The file contains no audio.")

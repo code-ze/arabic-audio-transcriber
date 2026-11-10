@@ -37,11 +37,20 @@
   .state { font-size: 13px; color: var(--muted); }
   .bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 10px; overflow: hidden; }
   .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s; }
-  .text { direction: rtl; text-align: right; font-size: 18px; line-height: 1.9; margin-top: 12px;
-          white-space: pre-wrap; }
-  .seg { display: flex; gap: 12px; direction: rtl; padding: 4px 0; }
-  .seg time { direction: ltr; font-size: 12px; color: var(--muted); min-width: 44px; padding-top: 6px;
-              font-variant-numeric: tabular-nums; }
+  .text { direction: rtl; text-align: right; font-size: 19px; line-height: 2.1; margin-top: 12px;
+          max-height: 420px; overflow-y: auto; scroll-behavior: smooth; }
+  .seg { display: flex; gap: 12px; direction: rtl; padding: 2px 0; }
+  .seg time { display: none; direction: ltr; font-size: 12px; color: var(--muted); min-width: 44px;
+              padding-top: 9px; font-variant-numeric: tabular-nums; cursor: pointer; }
+  .times .seg time { display: block; }
+  .w { cursor: pointer; border-radius: 5px; padding: 1px 2px; transition: background .12s, color .12s; }
+  .w:hover { background: var(--accent-soft); }
+  .w.said { color: var(--ink); }
+  .w.todo { color: var(--muted); }
+  .w.now { background: var(--accent); color: #fff; }
+  .player { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+  .player audio { flex: 1; min-width: 0; height: 36px; }
+  .speed { font-size: 12px; padding: 4px 8px; min-width: 46px; }
   .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
   button { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 8px; cursor: pointer;
            border: 1px solid var(--line); background: transparent; color: var(--ink); }
@@ -76,7 +85,7 @@ input.onchange = () => { [...input.files].forEach(send); input.value = ''; };
 ['dragenter','dragover'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add('over'); }));
 ['dragleave','drop'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove('over'); }));
 drop.addEventListener('drop', ev => [...ev.dataTransfer.files].forEach(send));
-showTimes.onchange = () => Object.values(results).forEach(r => render(r.el, r.job));
+showTimes.onchange = () => document.querySelectorAll('.text').forEach(t => t.classList.toggle('times', showTimes.checked));
 
 async function pollModel() {
   try {
@@ -110,6 +119,54 @@ async function poll(id, el) {
   if (job.status === 'queued' || job.status === 'working') setTimeout(() => poll(id, el), 800);
 }
 
+// Word-by-word playback: highlight the word being spoken, click a word to jump there.
+function wirePlayer(el) {
+  const audio = el.querySelector('audio'), box = el.querySelector('.text');
+  const spans = [...el.querySelectorAll('.w')];
+  const starts = spans.map(s => +s.dataset.s), ends = spans.map(s => +s.dataset.e);
+  let cur = -2, curActive = -2;
+
+  function locate(t) {            // last word whose start <= t (binary search)
+    let lo = 0, hi = starts.length - 1, ans = -1;
+    while (lo <= hi) { const m = (lo + hi) >> 1; if (starts[m] <= t) { ans = m; lo = m + 1; } else hi = m - 1; }
+    return ans;
+  }
+  function paint() {
+    const t = audio.currentTime;
+    const i = locate(t);
+    const active = i >= 0 && t <= ends[i] + 0.25 ? i : -1;
+    if (i === cur && active === curActive) return;
+    curActive = active;
+    spans.forEach((s, k) => {
+      s.classList.toggle('now', k === active);
+      s.classList.toggle('said', k <= i && k !== active);
+      s.classList.toggle('todo', k > i);
+    });
+    if (active >= 0 && !audio.paused) {
+      const s = spans[active], top = s.offsetTop - box.offsetTop;
+      if (top < box.scrollTop + 20 || top > box.scrollTop + box.clientHeight - 60)
+        box.scrollTop = top - box.clientHeight / 3;
+    }
+    cur = i;
+  }
+  let raf = 0;
+  const loop = () => { paint(); raf = requestAnimationFrame(loop); };
+  audio.addEventListener('play', () => { spans.forEach(s => s.classList.add('todo')); cancelAnimationFrame(raf); loop(); });
+  audio.addEventListener('pause', () => { cancelAnimationFrame(raf); paint(); });
+  audio.addEventListener('seeked', paint);
+  audio.addEventListener('ended', () => {
+    cancelAnimationFrame(raf); cur = curActive = -2;
+    spans.forEach(s => s.classList.remove('now', 'todo', 'said'));
+  });
+
+  spans.forEach(s => s.onclick = () => { audio.currentTime = +s.dataset.s; audio.play(); });
+  el.querySelectorAll('time').forEach(t => t.onclick = () => { audio.currentTime = +t.dataset.t; audio.play(); });
+
+  const speeds = [1, 1.25, 1.5, 2, 0.75], sp = el.querySelector('.speed');
+  let si = 0;
+  sp.onclick = () => { si = (si + 1) % speeds.length; audio.playbackRate = speeds[si]; sp.textContent = speeds[si] + '×'; };
+}
+
 function esc(s) { return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 
 function render(el, job) {
@@ -118,14 +175,22 @@ function render(el, job) {
   let body = '';
   if (job.status === 'done') {
     if (!job.text) body = '<div class="state" style="margin-top:10px">No speech detected.</div>';
-    else if (showTimes.checked)
-      body = '<div class="text">' + job.segments.map(s => `<div class="seg"><time>${s.start}</time><div>${esc(s.text)}</div></div>`).join('') + '</div>';
-    else body = `<div class="text">${esc(job.text)}</div>`;
-    if (job.text) body += `<div class="actions"><button data-a="copy">Copy text</button><button data-a="dl">Download .txt</button></div>`;
+    else {
+      body = `<div class="player"><audio controls preload="auto" src="/api/audio/${job.id}"></audio>` +
+             `<button class="speed" title="Playback speed">1×</button></div>`;
+      body += `<div class="text${showTimes.checked ? ' times' : ''}">` + job.segments.map(s =>
+        `<div class="seg"><time data-t="${s.start}">${s.label}</time><div>` +
+        (s.words.length
+          ? s.words.map(w => `<span class="w" data-s="${w.start}" data-e="${w.end}">${esc(w.text)}</span>`).join(' ')
+          : `<span class="w" data-s="${s.start}" data-e="${s.end}">${esc(s.text)}</span>`) +
+        `</div></div>`).join('') + '</div>';
+      body += `<div class="actions"><button data-a="copy">Copy text</button><button data-a="dl">Download .txt</button></div>`;
+    }
   } else if (job.status === 'error') body = `<div class="err">${esc(job.error || 'Error')}</div>`;
   else body = `<div class="bar"><i style="width:${Math.round((job.progress||0)*100)}%"></i></div>`;
   el.innerHTML = `<div class="job-head"><span class="name">${esc(job.name || '')}</span><span class="state">${labels[job.status] || ''}</span></div>${body}`;
-  el.querySelectorAll('button').forEach(b => b.onclick = () => {
+  if (job.status === 'done' && job.text) wirePlayer(el);
+  el.querySelectorAll('.actions button').forEach(b => b.onclick = () => {
     if (b.dataset.a === 'copy') { navigator.clipboard.writeText(job.text); b.textContent = 'Copied ✓'; }
     else {
       const a = document.createElement('a');

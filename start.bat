@@ -1,5 +1,8 @@
 @echo off
+rem Python env and model live on D: to save space on C:
 cd /d "%~dp0"
+set ASR_MODEL=D:\AI\models\voxtral-arabic
+set HF_HUB_OFFLINE=1
 start "" http://127.0.0.1:8765
-.venv\Scripts\python.exe app.py
+D:\AI\venvs\arabic-transcriber\Scripts\python.exe app.py
 pause

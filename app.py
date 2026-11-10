@@ -16,11 +16,20 @@ import uvicorn
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-from transcriber import Transcriber
+import json
+import shutil
+
+import soundfile as sf
+
+from transcriber import SR, Transcriber, load_audio
 
 HERE = Path(__file__).parent
 OUT_DIR = HERE / "transcripts"
 OUT_DIR.mkdir(exist_ok=True)
+# playable 16 kHz copies of uploads for the word-by-word player (cleared on start)
+MEDIA_DIR = Path(tempfile.gettempdir()) / "arabic-transcriber-media"
+shutil.rmtree(MEDIA_DIR, ignore_errors=True)
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI()
 engine = Transcriber()
@@ -50,12 +59,21 @@ def worker() -> None:
         try:
             def prog(done, total):
                 job["progress"] = done / total
-            segs = engine.transcribe(job["path"], progress=prog)
+            audio = load_audio(job["path"])
+            sf.write(MEDIA_DIR / f"{jid}.wav", audio, SR, subtype="PCM_16")
+            segs = engine.transcribe(job["path"], progress=prog, audio=audio)
             job["text"] = "\n".join(s.text for s in segs)
-            job["segments"] = [{"start": fmt_time(s.start), "end": fmt_time(s.end), "text": s.text} for s in segs]
+            job["segments"] = [
+                {"start": s.start, "end": s.end, "label": fmt_time(s.start), "text": s.text,
+                 "words": [{"start": w.start, "end": w.end, "text": w.text} for w in s.words]}
+                for s in segs
+            ]
+            job["duration"] = round(len(audio) / SR, 2)
             job["status"] = "done"
             stem = Path(job["name"]).stem
             (OUT_DIR / f"{stem}.txt").write_text(job["text"], encoding="utf-8")
+            (OUT_DIR / f"{stem}.words.json").write_text(
+                json.dumps(job["segments"], ensure_ascii=False, indent=1), encoding="utf-8")
         except Exception as e:  # noqa: BLE001
             job.update(status="error", error=str(e))
         finally:
@@ -87,6 +105,14 @@ async def upload(file: UploadFile = File(...)):
     jobs[jid] = {"id": jid, "name": file.filename, "path": path, "status": "queued", "progress": 0.0}
     work.put(jid)
     return {"id": jid}
+
+
+@app.get("/api/audio/{jid}")
+def audio(jid: str):
+    f = MEDIA_DIR / f"{jid}.wav"
+    if jid not in jobs or not f.exists():
+        raise HTTPException(404)
+    return FileResponse(f, media_type="audio/wav")
 
 
 @app.get("/api/job/{jid}")

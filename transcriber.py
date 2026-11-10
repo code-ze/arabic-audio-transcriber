@@ -7,13 +7,15 @@
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
-MODEL_ID = "mistralai/Voxtral-Mini-4B-Realtime-Arabic"
+# A local folder (e.g. D:\AI\models\voxtral-arabic) or the Hugging Face repo id
+MODEL_ID = os.environ.get("ASR_MODEL", "mistralai/Voxtral-Mini-4B-Realtime-Arabic")
 SR = 16000
 # Generation is CPU-launch-bound (~110 ms per 80 ms-token regardless of batch size),
 # so we cut recordings at pauses into short pieces and decode them in one batch.
@@ -62,10 +64,52 @@ def split_on_silence(audio: np.ndarray) -> list[tuple[int, int]]:
 
 
 @dataclass
+class Word:
+    start: float
+    end: float
+    text: str
+
+
+# Voxtral Realtime emits exactly one token per 80 ms of (padded) audio: text tokens
+# appear where the word is heard, with [STREAMING_PAD]/[STREAMING_WORD] filling the gaps.
+# The prompt is BOS + 32 left-pad + 6 delay tokens; measured against speech onsets,
+# a word's token lands ~3 steps after it starts, so start ≈ (pos - prompt_len - 3) * 80 ms.
+TOKEN_S = 0.08
+WORD_LEAD_TOKENS = 3
+
+
+def words_from_tokens(ids: list[int], prompt_len: int, decode, dur: float) -> list[Word]:
+    words: list[list] = []  # [start_pos, last_pos, [token ids]]
+    for pos in range(prompt_len, len(ids)):
+        piece = decode([ids[pos]])
+        if not piece:  # padding / word marker / eos
+            continue
+        if not words or piece[0].isspace():
+            words.append([pos, pos, [ids[pos]]])
+        else:
+            words[-1][1] = pos
+            words[-1][2].append(ids[pos])
+
+    def t(pos: int) -> float:
+        return min(max((pos - prompt_len - WORD_LEAD_TOKENS) * TOKEN_S, 0.0), dur)
+
+    out: list[Word] = []
+    for i, (p0, p1, toks) in enumerate(words):
+        start = t(p0)
+        nxt = t(words[i + 1][0]) if i + 1 < len(words) else dur
+        end = min(max(t(p1) + 0.4, start + 0.2), nxt, dur)
+        text = decode(toks).strip()
+        if text:
+            out.append(Word(round(start, 2), round(max(end, start), 2), text))
+    return out
+
+
+@dataclass
 class Segment:
     start: float
     end: float
     text: str
+    words: list[Word] = field(default_factory=list)
 
 
 class Transcriber:
@@ -92,27 +136,44 @@ class Transcriber:
             MODEL_ID, dtype=torch.bfloat16, device_map="auto"
         )
 
-    def _run(self, pieces: list[np.ndarray]) -> list[str]:
+    def _decode(self, ids: list[int]) -> str:
+        return self._proc.tokenizer.decode(ids, skip_special_tokens=True)
+
+    def _run(self, pieces: list[np.ndarray]) -> list[tuple[str, list[Word]]]:
         import torch
 
         inputs = self._proc(pieces, return_tensors="pt")
         inputs = inputs.to(self._model.device, dtype=self._model.dtype)
+        prompt_len = inputs["input_ids"].shape[1]
         # one text token per 80 ms of audio, plus headroom
-        max_new = int(max(len(p) for p in pieces) / SR / 0.08) + 64
+        max_new = int(max(len(p) for p in pieces) / SR / TOKEN_S) + 64
         with torch.inference_mode():
             out = self._model.generate(**inputs, do_sample=False, max_new_tokens=max_new)
-        return [t.strip() for t in self._proc.batch_decode(out, skip_special_tokens=True)]
+        results = []
+        for row, piece in zip(out.tolist(), pieces):
+            text = self._decode(row[prompt_len:]).strip()
+            words = words_from_tokens(row, prompt_len, self._decode, len(piece) / SR)
+            results.append((text, words))
+        return results
 
-    def transcribe(self, path: str, progress=None) -> list[Segment]:
-        audio = load_audio(path)
+    def transcribe(self, path: str, progress=None, audio: np.ndarray | None = None) -> list[Segment]:
+        if audio is None:
+            audio = load_audio(path)
         spans = [(s, e) for s, e in split_on_silence(audio)
                  if np.sqrt(np.mean(audio[s:e] ** 2)) >= 1e-4]  # drop digital silence
-        texts: list[str] = []
+        results: list[tuple[str, list[Word]]] = []
         with self._lock:  # one GPU job at a time
             self.load()
             for i in range(0, len(spans), BATCH):
                 group = spans[i:i + BATCH]
-                texts += self._run([audio[s:e] for s, e in group])
+                results += self._run([audio[s:e] for s, e in group])
                 if progress:
                     progress(min(i + BATCH, len(spans)), len(spans))
-        return [Segment(s / SR, e / SR, t) for (s, e), t in zip(spans, texts) if t]
+        segments = []
+        for (s, e), (text, words) in zip(spans, results):
+            if not text:
+                continue
+            off = s / SR
+            words = [Word(round(w.start + off, 2), round(w.end + off, 2), w.text) for w in words]
+            segments.append(Segment(off, e / SR, text, words))
+        return segments

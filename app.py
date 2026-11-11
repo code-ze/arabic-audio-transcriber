@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 
 from aligner import Aligner
 from fixes import Fixes, merge_alignment, realign, spread
+from metrics import score
 from transcriber import SR, Transcriber, load_audio
 
 HERE = Path(__file__).parent
@@ -62,6 +63,11 @@ def load_all() -> None:
         except (OSError, ValueError):
             continue
         items[item["id"]] = item
+        segs = item.get("segments", [])
+        if item.get("verified") and segs and not any("verified" in s for s in segs):
+            for s in segs:  # notes verified before lines could be checked one by one
+                s["verified"] = True
+            save(item)
         if item["status"] in ("queued", "working"):
             if find_source(item["id"]):
                 item.update(status="queued", progress=0.0)
@@ -179,14 +185,82 @@ def index():
     return FileResponse(HERE / "static" / "index.html")
 
 
+def verified_lines() -> list[tuple[dict, int, dict]]:
+    """(item, line index, line) for every line a person has checked: the training data."""
+    return [(it, i, s) for it in items.values() if it["status"] == "done"
+            for i, s in enumerate(it.get("segments", [])) if s.get("verified") and s["text"].strip()]
+
+
+def sync_item_verified(it: dict) -> None:
+    segs = [s for s in it.get("segments", []) if s["text"].strip()]
+    it["verified"] = bool(segs) and all(s.get("verified") for s in segs)
+
+
 @app.get("/api/status")
 def status():
-    verified = [i for i in items.values() if i.get("verified")]
+    lines = verified_lines()
     return {**model_state,
             "queued": sum(1 for i in items.values() if i["status"] in ("queued", "working")),
-            "verified": len(verified),
-            "verified_seconds": round(sum(i.get("duration", 0) for i in verified), 1),
+            "verified_lines": len(lines),
+            "verified_seconds": round(sum(s["end"] - s["start"] for _, _, s in lines), 1),
             "suggestions": len(fixes.suggestions())}
+
+
+TRAINING_GOAL_S = 3600  # about an hour of checked speech before fine-tuning is worth trying
+
+
+def model_line(it: dict, i: int) -> str | None:
+    lines = (it.get("model_text") or "").split("\n")
+    return lines[i] if i < len(lines) else None
+
+
+@app.get("/api/training")
+def training():
+    lines = verified_lines()
+    secs = sum(s["end"] - s["start"] for _, _, s in lines)
+    pairs = [(m, s["text"]) for it, i, s in lines if (m := model_line(it, i)) is not None]
+    tops = sorted(fixes.data["counts"].items(), key=lambda kv: -kv[1])[:12]
+    return {
+        "lines": len(lines),
+        "notes": len({it["id"] for it, _, _ in lines}),
+        "seconds": round(secs, 1),
+        "goal_seconds": TRAINING_GOAL_S,
+        "accuracy": score(pairs),
+        "unchecked_lines": sum(1 for it in items.values() if it["status"] == "done"
+                               for s in it.get("segments", []) if s["text"].strip() and not s.get("verified")),
+        "top_corrections": [{"from": k.split("\t")[0], "to": k.split("\t")[1], "count": n} for k, n in tops],
+    }
+
+
+@app.post("/api/training/export")
+def training_export():
+    """Write the checked lines as a training set: 16 kHz WAV clips + metadata.jsonl.
+    Whole recordings go to either train or test (about 1 in 10 to test), never both."""
+    import hashlib
+
+    import soundfile as sf
+
+    lines = verified_lines()
+    if not lines:
+        raise HTTPException(400, "No verified lines yet.")
+    out = DATA_DIR / "exports" / datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    (out / "audio").mkdir(parents=True)
+    audio_cache: dict[str, object] = {}
+    rows = []
+    for it, i, s in lines:
+        if it["id"] not in audio_cache:
+            audio_cache[it["id"]] = load_audio(str(item_dir(it["id"]) / "audio.m4a"))
+        clip = audio_cache[it["id"]][int(s["start"] * SR): int(s["end"] * SR)]
+        rel = f"audio/{it['id']}_{i:04d}.wav"
+        sf.write(out / rel, clip, SR, subtype="PCM_16")
+        split = "test" if int(hashlib.md5(it["id"].encode()).hexdigest(), 16) % 10 == 0 else "train"
+        rows.append({"audio": rel, "text": s["text"], "duration": round(s["end"] - s["start"], 2),
+                     "split": split, "source": it["name"], "line": i, "model_text": model_line(it, i)})
+    with open(out / "metadata.jsonl", "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    return {"folder": str(out), "lines": len(rows),
+            "train": sum(r["split"] == "train" for r in rows), "test": sum(r["split"] == "test" for r in rows)}
 
 
 @app.post("/api/upload")
@@ -255,10 +329,26 @@ def update_item(iid: str, body: dict = Body(...)):
     if "verified" in body:
         if it["status"] != "done":
             raise HTTPException(409, "Only finished transcripts can be verified.")
-        it["verified"] = bool(body["verified"])
+        for s in it.get("segments", []):  # whole note = every line checked
+            s["verified"] = bool(body["verified"])
+        sync_item_verified(it)
         it["verified_at"] = datetime.now().isoformat(timespec="seconds") if it["verified"] else None
     save(it)
     return {"ok": True, "verified": it.get("verified", False)}
+
+
+@app.put("/api/items/{iid}/segment/verified")
+def verify_line(iid: str, body: dict = Body(...)):
+    """Mark one line as checked: {"s": line index, "verified": true}."""
+    it = get_item(iid)
+    try:
+        seg = it["segments"][int(body["s"])]
+    except (KeyError, IndexError, ValueError, TypeError):
+        raise HTTPException(400, "bad line reference")
+    seg["verified"] = bool(body.get("verified", True))
+    sync_item_verified(it)
+    save(it)
+    return {"verified": seg["verified"], "item_verified": it["verified"]}
 
 
 @app.put("/api/items/{iid}/word")

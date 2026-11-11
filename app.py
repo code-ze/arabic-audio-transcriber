@@ -20,7 +20,7 @@ import uvicorn
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 
-from fixes import Fixes, spread
+from fixes import Fixes, realign, spread
 from transcriber import SR, Transcriber, load_audio
 
 HERE = Path(__file__).parent
@@ -237,6 +237,26 @@ def edit_word(iid: str, body: dict = Body(...)):
     else:
         words.pop(w)
     seg["text"] = " ".join(x["text"] for x in words)
+    it["edited"] = True
+    save(it)
+    return seg
+
+
+@app.put("/api/items/{iid}/segment")
+def edit_segment(iid: str, body: dict = Body(...)):
+    """Retype a whole line: {"s": segment index, "text": corrected text}. Word timings are re-fitted."""
+    it = get_item(iid)
+    try:
+        seg = it["segments"][int(body["s"])]
+    except (KeyError, IndexError, ValueError, TypeError):
+        raise HTTPException(400, "bad segment reference")
+    text = " ".join(str(body.get("text", "")).split())
+    if text == seg["text"]:
+        return seg
+    words, swaps = realign(seg["words"], text, seg["start"], seg["end"])
+    for before, after in swaps:
+        fixes.record(before, after)
+    seg["words"], seg["text"] = words, text
     it["edited"] = True
     save(it)
     return seg

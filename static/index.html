@@ -82,6 +82,24 @@
   .w.fixed { text-decoration: underline dotted var(--accent); text-underline-offset: 6px; }
   .w.auto { text-decoration: underline dashed #c9a227; text-underline-offset: 6px; }
 
+  /* line editing mode */
+  .text.editing { max-height: 560px; }
+  .eseg { display: flex; gap: 10px; align-items: flex-start; padding: 5px 0; }
+  .eseg textarea { flex: 1; font: inherit; font-size: 18px; line-height: 1.8; direction: rtl; text-align: right;
+                   resize: none; overflow: hidden; padding: 6px 10px; border-radius: 8px;
+                   border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+  .eseg textarea:focus { outline: none; border-color: var(--accent); }
+  .eseg.cur textarea { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .eseg .lp { direction: ltr; flex: none; font: inherit; font-size: 12px; padding: 6px 8px; margin-top: 4px;
+              border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--muted);
+              cursor: pointer; font-variant-numeric: tabular-nums; min-width: 64px; }
+  .eseg .lp:hover, .eseg.cur .lp { border-color: var(--accent); color: var(--accent); }
+  .eseg .st { flex: none; width: 16px; margin-top: 12px; font-size: 13px; color: var(--accent); }
+  .eseg .st.err { color: var(--err); }
+  .edithelp { font-size: 12.5px; color: var(--muted); margin-top: 8px; direction: ltr; text-align: left; }
+  .body.editmode .hint { display: none; }
+  .edithelp kbd { font: inherit; font-size: 11.5px; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+
   .trainbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 10px; font-size: 13px; color: var(--muted); }
   .trainbar b { color: var(--ink); font-weight: 500; }
   .linkbtn { font: inherit; font-size: 13px; background: none; border: 1px solid var(--line); border-radius: 999px;
@@ -340,7 +358,7 @@ function verifyBtn(verified) {
     : `<button class="b primary" data-a="verify" title="The text matches the audio exactly. It becomes training data.">Mark verified</button>`;
 }
 function actionsHtml(hasText, verified) {
-  return `<div class="actions">` + (hasText ? verifyBtn(verified) + `<button class="b" data-a="copy">Copy text</button>
+  return `<div class="actions">` + (hasText ? verifyBtn(verified) + `<button class="b" data-a="edittext" title="Retype whole lines — for transcripts that need a lot of fixing">Edit text</button><button class="b" data-a="copy">Copy text</button>
     <button class="b" data-a="txt">Download .txt</button><button class="b" data-a="srt">Subtitles .srt</button>` : '') +
     `<span class="spacer"></span><button class="b" data-a="rename">Rename</button><button class="b danger" data-a="del">Delete</button></div>`;
 }
@@ -359,6 +377,10 @@ function wireActions(b, item) {
       wireActions(b, item);
       toast(want ? 'Verified: added to training data' : 'Removed from training data');
       refresh(); pollModel();
+    } else if (a === 'edittext') {
+      const on = await b._edit(btn.textContent === 'Edit text');
+      btn.textContent = on ? 'Done editing' : 'Edit text';
+      btn.classList.toggle('primary', on);
     } else if (a === 'txt' || a === 'srt') location.href = `/api/items/${item.id}/export?fmt=${a}`;
     else if (a === 'rename') {
       const name = prompt('New name', cards.get(item.id).data.name);
@@ -446,6 +468,77 @@ function wirePlayer(body) {
     const onBlur = () => finish(true);
     w.addEventListener('keydown', onKey); w.addEventListener('blur', onBlur);
   }
+
+  /* ----- line editing: retype whole lines, play each line on its own ----- */
+  let editing = false, segs = [], stopAt = null;
+  audio.addEventListener('timeupdate', () => {
+    if (stopAt !== null && audio.currentTime >= stopAt) { audio.pause(); stopAt = null; }
+    if (editing) {
+      const t = audio.currentTime;
+      box.querySelectorAll('.eseg').forEach((row, i) => row.classList.toggle('cur', !audio.paused && t >= segs[i].start && t < segs[i].end));
+    }
+  });
+  audio.addEventListener('seeking', () => { if (!audio._lineSeek) stopAt = null; audio._lineSeek = false; });
+  function playLine(i) {
+    audio._lineSeek = true;
+    audio.currentTime = segs[i].start; stopAt = segs[i].end; audio.play();
+  }
+  const grow = ta => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; };
+
+  async function saveLine(i, ta) {
+    const text = ta.value.replace(/\s+/g, ' ').trim();
+    if (text === segs[i].text) return true;
+    const st = ta.parentElement.querySelector('.st');
+    st.className = 'st'; st.textContent = '…';
+    const r = await fetch(`/api/items/${openId}/segment`, { method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ s: i, text }) });
+    if (!r.ok) { st.className = 'st err'; st.textContent = '!'; st.title = 'Not saved — try again'; return false; }
+    segs[i] = await r.json();
+    st.textContent = '✓'; st.title = 'Saved';
+    return true;
+  }
+
+  body._edit = async on => {
+    const id = openId;
+    if (on) {
+      const item = await (await fetch('/api/items/' + id)).json();
+      segs = item.segments;
+      editing = true; audio.pause();
+      box.classList.add('editing'); body.classList.add('editmode');
+      box.innerHTML = segs.map((s, i) =>
+        `<div class="eseg"><button class="lp" data-i="${i}" title="Play this line">▶ ${fmt(s.start)}</button>` +
+        `<textarea rows="1" dir="rtl" data-i="${i}" spellcheck="false">${esc(s.text)}</textarea><span class="st"></span></div>`).join('') +
+        `<div class="edithelp">▶ plays one line · <kbd>Ctrl</kbd>+<kbd>Enter</kbd> saves and plays the next line · <kbd>Esc</kbd> undoes the line · changes save when you leave a line</div>`;
+      index();   // no word spans while editing, so the word highlighter stays idle
+      box.querySelectorAll('textarea').forEach(ta => {
+        grow(ta);
+        const i = +ta.dataset.i;
+        ta.addEventListener('input', () => { grow(ta); ta.parentElement.querySelector('.st').textContent = ''; });
+        ta.addEventListener('blur', () => saveLine(i, ta));
+        ta.addEventListener('keydown', async e => {
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            await saveLine(i, ta);
+            const next = box.querySelector(`textarea[data-i="${i + 1}"]`);
+            if (next) { next.focus(); next.setSelectionRange(next.value.length, next.value.length); playLine(i + 1); }
+          } else if (e.key === 'Escape') { e.preventDefault(); ta.value = segs[i].text; grow(ta); }
+          else if (e.key === 'Enter') e.preventDefault();   // one line per piece of audio
+        });
+      });
+      box.querySelectorAll('.lp').forEach(b => b.onclick = () => playLine(+b.dataset.i));
+      box.querySelector('textarea')?.focus();
+      return true;
+    }
+    // leaving edit mode: save anything still pending, then show the timed words again
+    for (const ta of box.querySelectorAll('textarea')) await saveLine(+ta.dataset.i, ta);
+    editing = false; stopAt = null;
+    box.classList.remove('editing'); body.classList.remove('editmode');
+    const item = await (await fetch('/api/items/' + id)).json();
+    renderText(box, item); index();
+    refresh(); pollModel();
+    return false;
+  };
+  box.addEventListener('dblclick', e => { if (editing) e.stopImmediatePropagation(); }, true);
 
   const speeds = [1, 1.25, 1.5, 2, 0.75], sp = body.querySelector('.speed'); let si = 0;
   sp.onclick = () => { si = (si + 1) % speeds.length; audio.playbackRate = speeds[si]; sp.textContent = speeds[si] + '×'; };

@@ -120,6 +120,46 @@ class Fixes:
         return changed
 
 
+def realign(old: list[dict], new_text: str, seg_start: float, seg_end: float) -> tuple[list[dict], list[tuple[str, str]]]:
+    """Give a retyped line word timings by lining it up with the old timed words.
+
+    Unchanged words keep their exact times. Replaced/inserted words share the time
+    between their unchanged neighbours. Returns (new words, one-for-one word swaps)
+    so swaps can be counted as learned fixes.
+    """
+    from difflib import SequenceMatcher
+
+    new = new_text.split()
+    sm = SequenceMatcher(a=[split_edges(w["text"])[1] for w in old],
+                         b=[split_edges(w)[1] for w in new], autojunk=False)
+    out: list[dict] = []
+    swaps: list[tuple[str, str]] = []
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op == "equal":
+            for k in range(i2 - i1):
+                w = dict(old[i1 + k])
+                w["text"] = new[j1 + k]  # punctuation may have changed
+                if w["text"] != old[i1 + k]["text"]:
+                    w["fixed"] = True
+                out.append(w)
+            continue
+        if op == "replace" and i2 - i1 == j2 - j1:
+            swaps += [(old[i1 + k]["text"], new[j1 + k]) for k in range(i2 - i1)]
+        if j1 == j2:  # deletion
+            continue
+        # time window: the replaced words' span, else the gap between neighbours
+        if i2 > i1:
+            s, e = old[i1]["start"], old[i2 - 1]["end"]
+        else:
+            s = out[-1]["end"] if out else (old[i1 - 1]["end"] if i1 > 0 else seg_start)
+            e = old[i1]["start"] if i1 < len(old) else seg_end
+        if e - s < 0.08 * (j2 - j1):  # no room: borrow a little time after
+            e = min(seg_end, s + 0.25 * (j2 - j1))
+            s = min(s, e - 0.08 * (j2 - j1))
+        out += spread({"start": s, "end": e}, new[j1:j2], fixed=True)
+    return out, swaps
+
+
 def spread(word: dict, parts: list[str], **flags) -> list[dict]:
     """Replace one timed word with len(parts) words sharing its time span evenly."""
     s, e = word["start"], word["end"]

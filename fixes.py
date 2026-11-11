@@ -144,7 +144,13 @@ def realign(old: list[dict], new_text: str, seg_start: float, seg_end: float) ->
                 out.append(w)
             continue
         if op == "replace" and i2 - i1 == j2 - j1:
+            # one-for-one swaps: each new word takes the exact time of the word it replaces
             swaps += [(old[i1 + k]["text"], new[j1 + k]) for k in range(i2 - i1)]
+            for k in range(i2 - i1):
+                w = {kk: v for kk, v in old[i1 + k].items() if kk not in ("auto",)}
+                w.update(text=new[j1 + k], fixed=True)
+                out.append(w)
+            continue
         if j1 == j2:  # deletion
             continue
         # time window: the replaced words' span, else the gap between neighbours
@@ -156,8 +162,46 @@ def realign(old: list[dict], new_text: str, seg_start: float, seg_end: float) ->
         if e - s < 0.08 * (j2 - j1):  # no room: borrow a little time after
             e = min(seg_end, s + 0.25 * (j2 - j1))
             s = min(s, e - 0.08 * (j2 - j1))
-        out += spread({"start": s, "end": e}, new[j1:j2], fixed=True)
+        # added / merged words: only a guess until the aligner re-syncs them
+        out += spread({"start": s, "end": e}, new[j1:j2], fixed=True, guess=True)
     return out, swaps
+
+
+def merge_alignment(words: list[dict], aligned: list, seg_dur: float) -> list[dict]:
+    """Use forced-alignment times for words you changed, keeping untouched model words as anchors.
+
+    `aligned` has one (start, end) per word, same order as `words`, or None where
+    the aligner couldn't place it. Only words whose time is a guess (flag "guess":
+    added or merged words) are moved, and only if the aligned time falls between
+    their neighbours; otherwise they keep their estimate.
+    """
+    out = [dict(w) for w in words]
+    anchor = [not w.get("guess") for w in out]  # model-timed words (incl. one-for-one fixes) are trusted
+    # The aligner and the transcription model time words slightly differently; measure the
+    # typical offset on the unchanged words both timed, and shift the aligner to match.
+    offs = sorted(aligned[i][0] - out[i]["start"] for i in range(min(len(out), len(aligned)))
+                  if anchor[i] and aligned[i] is not None)
+    shift = offs[len(offs) // 2] if len(offs) >= 2 else 0.0
+    aligned = [(a[0] - shift, a[1] - shift) if a else None for a in aligned]
+    for i, w in enumerate(out):
+        if anchor[i] or i >= len(aligned) or aligned[i] is None:
+            continue
+        lo = out[i - 1]["start"] if i > 0 else -1.0
+        nxt = next((out[j]["start"] for j in range(i + 1, len(out)) if anchor[j]), seg_dur + 1.0)
+        s, e = aligned[i]
+        if lo < s < nxt:
+            w["start"] = s
+            w["end"] = min(max(e, s + 0.12), nxt)
+            w.pop("guess", None)
+    # keep order (a moved word must not jump past an estimated one) and sane spans
+    for i, w in enumerate(out):
+        if i > 0 and not anchor[i] and w["start"] < out[i - 1]["start"]:
+            w["start"] = out[i - 1]["start"]
+        w["end"] = max(w["end"], w["start"])
+    for i, w in enumerate(out):
+        if not anchor[i] and i + 1 < len(out):
+            w["end"] = max(w["start"], min(w["end"], out[i + 1]["start"]))
+    return out
 
 
 def spread(word: dict, parts: list[str], **flags) -> list[dict]:

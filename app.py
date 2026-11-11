@@ -20,7 +20,8 @@ import uvicorn
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 
-from fixes import Fixes, realign, spread
+from aligner import Aligner
+from fixes import Fixes, merge_alignment, realign, spread
 from transcriber import SR, Transcriber, load_audio
 
 HERE = Path(__file__).parent
@@ -31,8 +32,10 @@ fixes = Fixes(DATA_DIR / "fixes.json")
 
 app = FastAPI()
 engine = Transcriber()
+aligner = Aligner()  # loaded on the first re-sync
 items: dict[str, dict] = {}
-work: "queue.Queue[str]" = queue.Queue()
+work: "queue.Queue[tuple[str, str]]" = queue.Queue()  # ("transcribe" | "align", item id)
+align_queued: set[str] = set()
 model_state = {"status": "loading", "error": None}
 save_lock = threading.Lock()
 
@@ -62,10 +65,12 @@ def load_all() -> None:
         if item["status"] in ("queued", "working"):
             if find_source(item["id"]):
                 item.update(status="queued", progress=0.0)
-                work.put(item["id"])
+                work.put(("transcribe", item["id"]))
             else:
                 item.update(status="error", error="Interrupted before it finished; please upload again.")
             save(item)
+        elif any(s.get("pending_align") for s in item.get("segments", [])):
+            queue_align(item["id"])  # finish re-syncs interrupted by a restart
 
 
 def find_source(iid: str) -> Path | None:
@@ -92,41 +97,79 @@ def worker() -> None:
         model_state.update(status="error", error=str(e))
         return
     while True:
-        iid = work.get()
-        item = items.get(iid)
-        src = find_source(iid)
-        if not item or not src:
-            continue
-        item["status"] = "working"
-        save(item)
-        t0 = time.time()
+        kind, iid = work.get()
         try:
-            def prog(done, total):
-                item["progress"] = done / total
+            if kind == "align":
+                align_item(iid)
+            else:
+                transcribe_item(iid)
+        except Exception as e:  # noqa: BLE001  never let one job kill the worker
+            print(f"{kind} job for {iid} failed: {e}")
 
-            audio = load_audio(str(src))
-            # compact copy for playback (AAC plays in every browser)
-            subprocess.run(
-                ["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", str(src), "-vn",
-                 "-ac", "1", "-c:a", "aac", "-b:a", "64k", str(item_dir(iid) / "audio.m4a")],
-                check=True, capture_output=True,
-            )
-            segs = engine.transcribe(str(src), progress=prog, audio=audio)
-            item["segments"] = [
-                {"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text,
-                 "words": [{"start": w.start, "end": w.end, "text": w.text} for w in s.words]}
-                for s in segs
-            ]
-            item["duration"] = round(len(audio) / SR, 2)
-            item["model_text"] = full_text(item)  # untouched model output, kept for measuring accuracy later
-            item["auto_fixes"] = fixes.apply(item)
-            item["status"] = "done"
-            src.unlink(missing_ok=True)
-        except Exception as e:  # noqa: BLE001
-            item.update(status="error", error=str(e)[-500:])
-        finally:
-            item["seconds"] = round(time.time() - t0, 1)
-            save(item)
+
+def queue_align(iid: str) -> None:
+    """Re-sync edited lines to the audio in the background (batched per transcript)."""
+    if iid not in align_queued:
+        align_queued.add(iid)
+        work.put(("align", iid))
+
+
+def align_item(iid: str) -> None:
+    align_queued.discard(iid)
+    item = items.get(iid)
+    if not item:
+        return
+    todo = [(i, s) for i, s in enumerate(item.get("segments", [])) if s.get("pending_align")]
+    if not todo:
+        return
+    audio = load_audio(str(item_dir(iid) / "audio.m4a"))
+    for i, seg in todo:
+        text = seg["text"]
+        spans = aligner.align(audio[int(seg["start"] * SR): int(seg["end"] * SR)], text)
+        if seg["text"] != text:  # edited again meanwhile: a newer job will handle it
+            continue
+        off = seg["start"]
+        aligned = [(round(x[0] + off, 2), round(x[1] + off, 2)) if x else None for x in spans]
+        seg["words"] = merge_alignment(seg["words"], aligned, seg["end"])
+        seg.pop("pending_align", None)
+    save(item)
+
+
+def transcribe_item(iid: str) -> None:
+    item = items.get(iid)
+    src = find_source(iid)
+    if not item or not src:
+        return
+    item["status"] = "working"
+    save(item)
+    t0 = time.time()
+    try:
+        def prog(done, total):
+            item["progress"] = done / total
+
+        audio = load_audio(str(src))
+        # compact copy for playback (AAC plays in every browser)
+        subprocess.run(
+            ["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", str(src), "-vn",
+             "-ac", "1", "-c:a", "aac", "-b:a", "64k", str(item_dir(iid) / "audio.m4a")],
+            check=True, capture_output=True,
+        )
+        segs = engine.transcribe(str(src), progress=prog, audio=audio)
+        item["segments"] = [
+            {"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text,
+             "words": [{"start": w.start, "end": w.end, "text": w.text} for w in s.words]}
+            for s in segs
+        ]
+        item["duration"] = round(len(audio) / SR, 2)
+        item["model_text"] = full_text(item)  # untouched model output, kept for measuring accuracy later
+        item["auto_fixes"] = fixes.apply(item)
+        item["status"] = "done"
+        src.unlink(missing_ok=True)
+    except Exception as e:  # noqa: BLE001
+        item.update(status="error", error=str(e)[-500:])
+    finally:
+        item["seconds"] = round(time.time() - t0, 1)
+        save(item)
 
 
 # ---------- API ----------
@@ -159,7 +202,7 @@ async def upload(file: UploadFile = File(...)):
             "status": "queued", "progress": 0.0}
     items[iid] = item
     save(item)
-    work.put(iid)
+    work.put(("transcribe", iid))
     return {"id": iid}
 
 
@@ -177,7 +220,8 @@ def list_items(q: str = ""):
             hit = ("…" if k > 40 else "") + text[max(0, k - 40): k + len(q) + 40] + "…"
         out.append({k: it.get(k) for k in ("id", "name", "created", "status", "progress", "duration", "seconds",
                                            "error", "verified", "auto_fixes")}
-                   | {"preview": hit or text[:140]})
+                   | {"preview": hit or text[:140],
+                      "syncing": sum(1 for s in it.get("segments", []) if s.get("pending_align"))})
     return out
 
 
@@ -232,14 +276,38 @@ def edit_word(iid: str, body: dict = Body(...)):
     before = words[w]["text"]
     if parts:
         # several words typed = the model missed some; they share this word's time span
-        words[w:w + 1] = spread(words[w], parts, fixed=True)
+        words[w:w + 1] = spread(words[w], parts, fixed=True, guess=len(parts) > 1)
         fixes.record(before, " ".join(parts))
+        if len(parts) > 1:  # added words only have estimated times until re-synced
+            seg["pending_align"] = True
     else:
         words.pop(w)
     seg["text"] = " ".join(x["text"] for x in words)
     it["edited"] = True
     save(it)
+    if seg.get("pending_align"):
+        queue_align(iid)
     return seg
+
+
+@app.post("/api/items/{iid}/resync")
+def resync(iid: str):
+    """Re-sync every edited line of a transcript to its audio (all corrected words get re-timed)."""
+    it = get_item(iid)
+    if it["status"] != "done":
+        raise HTTPException(409, "Not finished transcribing yet.")
+    n = 0
+    for seg in it.get("segments", []):
+        edited = [w for w in seg["words"] if w.get("fixed")]
+        if edited:
+            for w in edited:
+                w["guess"] = True
+            seg["pending_align"] = True
+            n += 1
+    save(it)
+    if n:
+        queue_align(iid)
+    return {"lines": n}
 
 
 @app.put("/api/items/{iid}/segment")
@@ -258,7 +326,11 @@ def edit_segment(iid: str, body: dict = Body(...)):
         fixes.record(before, after)
     seg["words"], seg["text"] = words, text
     it["edited"] = True
+    if any(w.get("guess") for w in words):
+        seg["pending_align"] = True  # added words have guessed times; the worker re-syncs them to the audio
     save(it)
+    if seg.get("pending_align"):
+        queue_align(iid)
     return seg
 
 

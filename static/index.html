@@ -285,8 +285,10 @@ async function refresh(rebuildOrder) {
     const was = c.data;
     c.data = d;
     if (!was || was.status !== d.status || was.progress !== d.progress || was.name !== d.name || was.preview !== d.preview
-        || was.verified !== d.verified)
+        || was.verified !== d.verified || was.syncing !== d.syncing)
       renderHead(c);
+    // re-sync finished for the open transcript: redraw its words with the new timings
+    if (was && was.syncing && !d.syncing && openId === d.id) c.el.querySelector('.body')?._reload?.();
     const want = prev ? prev.nextSibling : listEl.firstChild;
     if (c.el !== want) listEl.insertBefore(c.el, want);
     prev = c.el;
@@ -302,7 +304,9 @@ async function refresh(rebuildOrder) {
 function renderHead(c) {
   const d = c.data;
   const labels = { queued: 'Waiting in queue…', working: 'Transcribing… ' + Math.round((d.progress || 0) * 100) + '%', error: 'Failed' };
-  const meta = d.status === 'done' ? `${fmt(d.duration)} · ${when(d.created)}` : labels[d.status] || '';
+  const meta = d.status === 'done'
+    ? (d.syncing ? `<span title="Fitting your corrected words to the audio">syncing words to audio…</span> · ` : '') + `${fmt(d.duration)} · ${when(d.created)}`
+    : labels[d.status] || '';
   let preview = esc(d.preview || '');
   if (searchQ) preview = preview.split(esc(searchQ)).join(`<mark>${esc(searchQ)}</mark>`);
   let extra = '';
@@ -359,7 +363,8 @@ function verifyBtn(verified) {
 }
 function actionsHtml(hasText, verified) {
   return `<div class="actions">` + (hasText ? verifyBtn(verified) + `<button class="b" data-a="edittext" title="Retype whole lines — for transcripts that need a lot of fixing">Edit text</button><button class="b" data-a="copy">Copy text</button>
-    <button class="b" data-a="txt">Download .txt</button><button class="b" data-a="srt">Subtitles .srt</button>` : '') +
+    <button class="b" data-a="txt">Download .txt</button><button class="b" data-a="srt">Subtitles .srt</button>
+    <button class="b" data-a="resync" title="Fit the timing of your corrected words to the audio again">Re-sync timing</button>` : '') +
     `<span class="spacer"></span><button class="b" data-a="rename">Rename</button><button class="b danger" data-a="del">Delete</button></div>`;
 }
 function wireActions(b, item) {
@@ -381,6 +386,10 @@ function wireActions(b, item) {
       const on = await b._edit(btn.textContent === 'Edit text');
       btn.textContent = on ? 'Done editing' : 'Edit text';
       btn.classList.toggle('primary', on);
+    } else if (a === 'resync') {
+      const r = await (await post(`/api/items/${item.id}/resync`)).json();
+      toast(r.lines ? `Re-syncing ${r.lines} edited line${r.lines > 1 ? 's' : ''} to the audio…` : 'No edited lines to re-sync');
+      refresh();
     } else if (a === 'txt' || a === 'srt') location.href = `/api/items/${item.id}/export?fmt=${a}`;
     else if (a === 'rename') {
       const name = prompt('New name', cards.get(item.id).data.name);
@@ -540,6 +549,15 @@ function wirePlayer(body) {
   };
   box.addEventListener('dblclick', e => { if (editing) e.stopImmediatePropagation(); }, true);
 
+  // called when a background re-sync finishes: redraw words unless you're mid-edit
+  body._reload = async () => {
+    if (editing || box.querySelector('[contenteditable]')) return;
+    const item = await (await fetch('/api/items/' + openId)).json();
+    const keep = box.scrollTop;
+    renderText(box, item); index(); paint(); box.scrollTop = keep;
+    toast('Word timings synced to the audio');
+  };
+
   const speeds = [1, 1.25, 1.5, 2, 0.75], sp = body.querySelector('.speed'); let si = 0;
   sp.onclick = () => { si = (si + 1) % speeds.length; audio.playbackRate = speeds[si]; sp.textContent = speeds[si] + '×'; };
 }
@@ -591,7 +609,7 @@ document.addEventListener('keydown', e => {
 /* ---------- polling ---------- */
 async function loop() {
   await Promise.all([pollModel(), refresh()]);
-  const busy = [...cards.values()].some(c => c.data && (c.data.status === 'queued' || c.data.status === 'working'));
+  const busy = [...cards.values()].some(c => c.data && (c.data.status === 'queued' || c.data.status === 'working' || c.data.syncing));
   setTimeout(loop, busy || $('#dot').className !== 'dot ready' ? 1000 : 6000);
 }
 loop();

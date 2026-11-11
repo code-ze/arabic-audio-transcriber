@@ -1,4 +1,6 @@
-# torch is installed separately (CUDA build): pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+# torch/torchaudio CUDA builds: pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+torchaudio==2.8.0     # MMS forced aligner (re-syncs corrected words to the audio); same CUDA index as torch
+uroman                # romanizes Arabic for the aligner
 transformers==5.16.1
 accelerate
 mistral-common[audio]

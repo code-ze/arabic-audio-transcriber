@@ -7,6 +7,7 @@ services:
     environment:
       ASR_MODEL: /model
       DATA_DIR: /data
+      TORCH_HOME: /torch
       HF_HUB_OFFLINE: "1"
     volumes:
       # Plain model folder on the host (download once with:
@@ -14,6 +15,8 @@ services:
       - ${MODEL_DIR:-D:/AI/models/voxtral-arabic}:/model:ro
       # Transcripts + audio library (shared with the non-Docker app)
       - ${DATA_DIR:-D:/AI/arabic-transcriber-data}:/data
+      # Forced-alignment model (~1.2 GB, downloaded on first re-sync)
+      - ${TORCH_DIR:-D:/AI/torch}:/torch
     deploy:
       resources:
         reservations:

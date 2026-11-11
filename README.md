@@ -6,7 +6,9 @@ Local, private transcription for Arabic voice notes, dialects included. Drop in 
 
 - **Upload or record**: WhatsApp `.opus`/`.ogg`, `.m4a`, `.mp3`, `.wav`, `.aac`, video files, or record straight from the microphone. Several files queue up automatically.
 - **Word-by-word playback**: the word being spoken lights up as the audio plays. Click any word to jump there. Playback speed goes from 0.75× to 2×, and Space plays/pauses.
-- **Fix mistakes**: double-click a word to correct it (Enter saves, Esc cancels, an empty word deletes it). Corrected words are underlined.
+- **Fix mistakes**: double-click a word to correct it (Enter saves, Esc cancels, an empty word deletes it). Type several words to add ones the model missed; they share the original word's timing. Corrected words are underlined.
+- **Verified notes = training data**: when a transcript matches the audio exactly, press **Mark verified**. The header counts how many verified notes (and minutes of audio) you've collected for fine-tuning. The model's original output is kept alongside, for measuring accuracy later.
+- **Learned fixes**: correct the same word the same way twice and the app suggests it as a rule. Turned on, it's applied to new transcripts automatically (yellow dashed underline) and, if you choose, to past ones. Verified notes and manual corrections are never changed. Rules live in `DATA_DIR/fixes.json`.
 - **History and search**: every transcript and its audio is kept. Search across all of them in Arabic or Latin script.
 - **Export**: copy the text, or download `.txt` or `.srt` subtitles (from the word timings).
 
@@ -54,5 +56,6 @@ docker compose up -d --build
 ## Files
 
 - `transcriber.py`: audio decoding (ffmpeg), pause-based chunking, batched GPU inference, word timings
-- `app.py`: FastAPI server, job queue, library storage, editing, SRT export
+- `app.py`: FastAPI server, job queue, library storage, editing, verification, SRT export
+- `fixes.py`: learned fixes (counting corrections, suggestions, applying rules)
 - `static/index.html`: the whole UI (single file, no build step)

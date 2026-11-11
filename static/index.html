@@ -80,6 +80,39 @@
   .w.now { background: var(--accent); color: var(--accent-ink); }
   .w[contenteditable] { outline: 2px solid var(--accent); background: var(--card); color: var(--ink); cursor: text; }
   .w.fixed { text-decoration: underline dotted var(--accent); text-underline-offset: 6px; }
+  .w.auto { text-decoration: underline dashed #c9a227; text-underline-offset: 6px; }
+
+  .trainbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+  .trainbar b { color: var(--ink); font-weight: 500; }
+  .linkbtn { font: inherit; font-size: 13px; background: none; border: 1px solid var(--line); border-radius: 999px;
+             color: var(--ink); padding: 3px 11px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
+  .linkbtn:hover { border-color: var(--accent); color: var(--accent); }
+  .badge { background: #c9a227; color: #1d1d1b; border-radius: 999px; font-size: 11px; padding: 0 6px; font-weight: 600; }
+  .vbadge { display: inline-block; margin-left: 8px; font-size: 11.5px; font-weight: 500; color: var(--accent);
+            border: 1px solid var(--accent); border-radius: 999px; padding: 0 7px; vertical-align: 1px; }
+  button.b.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button.b.primary:hover { color: var(--accent-ink); filter: brightness(1.1); }
+
+  dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--card); color: var(--ink);
+           padding: 0; width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 64px); }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  .dlg { padding: 18px 20px 20px; }
+  .dlg h2 { font-size: 18px; margin: 0 0 4px; font-weight: 600; }
+  .dlg h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 20px 0 8px; font-weight: 500; }
+  .dlg p { margin: 0; color: var(--muted); font-size: 14px; }
+  .rule { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 8px 0;
+          border-top: 1px solid var(--line); }
+  .rule .pair { direction: rtl; text-align: right; font-size: 17px; }
+  .rule .pair s { color: var(--muted); }
+  .rule .pair .arrow { color: var(--muted); margin: 0 6px; }
+  .rule .n { font-size: 12px; color: var(--muted); direction: ltr; display: block; text-align: right; }
+  .rule .btns { display: flex; gap: 6px; }
+  .none { font-size: 14px; color: var(--muted); padding: 6px 0; }
+  .addrow { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; direction: rtl; }
+  @media (max-width: 520px) { .addrow { grid-template-columns: 1fr; } }
+  .addrow input { min-width: 0; font: inherit; padding: 7px 10px; border-radius: 8px;
+                  border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+  .dlg .foot { display: flex; justify-content: space-between; gap: 8px; margin-top: 20px; flex-wrap: wrap; }
   .hint { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
   .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
   button.b { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 8px; cursor: pointer;
@@ -100,6 +133,10 @@
     <h1>Arabic Transcriber · تفريغ الصوت</h1>
     <p>Arabic voice notes to text, with word-by-word playback. Runs entirely on this computer.</p>
     <div class="pill"><span class="dot" id="dot"></span><span id="mstate">Loading model…</span></div>
+    <div class="trainbar">
+      <span id="trainStats" title="Transcripts you checked and marked Verified. These become training data for fine-tuning.">Training data: <b>0 verified notes</b></span>
+      <button class="linkbtn" id="fixesBtn">Learned fixes <span class="badge" id="fixBadge" hidden></span></button>
+    </div>
   </header>
 
   <div class="inputs">
@@ -119,6 +156,26 @@
   <div id="list"></div>
 </main>
 <div id="toast"></div>
+<dialog id="fixesDlg">
+  <div class="dlg">
+    <h2>Learned fixes</h2>
+    <p>When you correct the same word the same way twice, it shows up here. Turn it on and new transcripts get that fix automatically (marked with a yellow dashed underline). Manual corrections are never overwritten.</p>
+    <h3>Suggestions</h3>
+    <div id="sugList"></div>
+    <h3>Active fixes</h3>
+    <div id="ruleList"></div>
+    <h3>Add a fix yourself</h3>
+    <form class="addrow" id="addFix">
+      <input name="from" placeholder="Model writes…" dir="auto" required>
+      <input name="to" placeholder="Should be…" dir="auto" required>
+      <button class="b" type="submit">Add</button>
+    </form>
+    <div class="foot">
+      <button class="b" id="applyPast" title="Verified transcripts are left exactly as you checked them">Apply to past transcripts</button>
+      <button class="b" id="closeFixes">Close</button>
+    </div>
+  </div>
+</dialog>
 <script>
 const $ = s => document.querySelector(s);
 const listEl = $('#list'), search = $('#search'), showTimes = $('#showTimes');
@@ -141,6 +198,8 @@ async function pollModel() {
     $('#dot').className = 'dot ' + (s.status === 'ready' ? 'ready' : s.status === 'error' ? 'error' : '');
     $('#mstate').textContent = s.status === 'ready' ? 'Model ready (Voxtral Arabic, on GPU)' + (s.queued ? ` · ${s.queued} in queue` : '')
       : s.status === 'error' ? 'Model failed to load: ' + s.error : 'Loading model… (about 20 seconds)';
+    $('#trainStats').innerHTML = `Training data: <b>${s.verified} verified note${s.verified === 1 ? '' : 's'} · ${fmt(s.verified_seconds)}</b>`;
+    $('#fixBadge').hidden = !s.suggestions; $('#fixBadge').textContent = s.suggestions;
   } catch { $('#mstate').textContent = 'Server not running — start it with start.bat'; $('#dot').className = 'dot error'; }
 }
 
@@ -207,7 +266,8 @@ async function refresh(rebuildOrder) {
     if (!c) { c = { el: document.createElement('div') }; c.el.className = 'item'; cards.set(d.id, c); }
     const was = c.data;
     c.data = d;
-    if (!was || was.status !== d.status || was.progress !== d.progress || was.name !== d.name || was.preview !== d.preview)
+    if (!was || was.status !== d.status || was.progress !== d.progress || was.name !== d.name || was.preview !== d.preview
+        || was.verified !== d.verified)
       renderHead(c);
     const want = prev ? prev.nextSibling : listEl.firstChild;
     if (c.el !== want) listEl.insertBefore(c.el, want);
@@ -234,7 +294,7 @@ function renderHead(c) {
   else if (d.status === 'done' && !d.preview) extra = `<div class="preview">No speech detected.</div>`;
   let head = c.el.querySelector('.head');
   if (!head) { head = document.createElement('div'); head.className = 'head'; c.el.prepend(head); head.onclick = () => open(d.id); }
-  head.innerHTML = `<span class="name">${esc(d.name)}</span><span class="meta">${meta}</span>` +
+  head.innerHTML = `<span class="name">${esc(d.name)}${d.verified ? '<span class="vbadge">✓ Verified</span>' : ''}</span><span class="meta">${meta}</span>` +
     (d.preview ? `<div class="preview">${preview}</div>` : '') + extra;
   if (d.status === 'error' && !c.el.querySelector('.body')) {
     const b = document.createElement('div'); b.className = 'body';
@@ -256,12 +316,13 @@ async function open(id, force) {
   c.el.querySelector('.body')?.remove();
   const b = document.createElement('div'); b.className = 'body';
   if (!item.segments?.length) {
-    b.innerHTML = `<div class="hint">No speech was detected in this recording.</div>` + actionsHtml(false);
+    b.innerHTML = `<div class="hint">No speech was detected in this recording.</div>` + actionsHtml(false, item.verified);
   } else {
     b.innerHTML = `<div class="player"><audio controls preload="auto" src="/api/items/${id}/audio"></audio>` +
       `<button class="b speed" title="Playback speed">1×</button></div>` +
       `<div class="text${showTimes.checked ? ' times' : ''}"></div>` +
-      `<div class="hint">Click a word to play from there · double-click a word to correct it</div>` + actionsHtml(true);
+      `<div class="hint">Click a word to play from there · double-click to correct it (type several words to add ones the model missed, leave it empty to delete) · when the whole text is right, press <b>Mark verified</b></div>` +
+      actionsHtml(true, item.verified);
   }
   c.el.append(b);
   wireActions(b, item);
@@ -273,8 +334,13 @@ function close(id) {
   c.el.classList.remove('open'); c.el.querySelector('.body')?.remove();
   if (openId === id) openId = null;
 }
-function actionsHtml(hasText) {
-  return `<div class="actions">` + (hasText ? `<button class="b" data-a="copy">Copy text</button>
+function verifyBtn(verified) {
+  return verified
+    ? `<button class="b" data-a="verify" title="Click to un-verify">✓ Verified</button>`
+    : `<button class="b primary" data-a="verify" title="The text matches the audio exactly. It becomes training data.">Mark verified</button>`;
+}
+function actionsHtml(hasText, verified) {
+  return `<div class="actions">` + (hasText ? verifyBtn(verified) + `<button class="b" data-a="copy">Copy text</button>
     <button class="b" data-a="txt">Download .txt</button><button class="b" data-a="srt">Subtitles .srt</button>` : '') +
     `<span class="spacer"></span><button class="b" data-a="rename">Rename</button><button class="b danger" data-a="del">Delete</button></div>`;
 }
@@ -285,6 +351,14 @@ function wireActions(b, item) {
       const fresh = await (await fetch('/api/items/' + item.id)).json();
       await navigator.clipboard.writeText(fresh.segments.map(s => s.text).join('\n'));
       toast('Copied');
+    } else if (a === 'verify') {
+      const want = btn.classList.contains('primary');   // primary = "Mark verified"
+      const r = await fetch('/api/items/' + item.id, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ verified: want }) });
+      if (!r.ok) { toast('Could not update'); return; }
+      btn.outerHTML = verifyBtn(want);
+      wireActions(b, item);
+      toast(want ? 'Verified: added to training data' : 'Removed from training data');
+      refresh(); pollModel();
     } else if (a === 'txt' || a === 'srt') location.href = `/api/items/${item.id}/export?fmt=${a}`;
     else if (a === 'rename') {
       const name = prompt('New name', cards.get(item.id).data.name);
@@ -302,7 +376,7 @@ async function del(id) {
 function renderText(box, item) {
   box.innerHTML = item.segments.map((s, si) =>
     `<div class="seg"><time data-t="${s.start}">${fmt(s.start)}</time><div>` +
-    s.words.map((w, wi) => `<span class="w" data-si="${si}" data-wi="${wi}" data-s="${w.start}" data-e="${w.end}">${esc(w.text)}</span>`).join(' ') +
+    s.words.map((w, wi) => `<span class="w${w.fixed ? ' fixed' : w.auto ? ' auto' : ''}"${w.auto ? ' title="Changed automatically by a learned fix"' : ''} data-si="${si}" data-wi="${wi}" data-s="${w.start}" data-e="${w.end}">${esc(w.text)}</span>`).join(' ') +
     `</div></div>`).join('');
 }
 
@@ -361,11 +435,12 @@ function wirePlayer(body) {
       const r = await fetch(`/api/items/${id}/word`, { method: 'PUT', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ s: +w.dataset.si, w: +w.dataset.wi, text }) });
       if (!r.ok) { w.textContent = before; toast('Could not save the change'); return; }
-      if (!text) {            // word deleted: indices shift, so redraw this transcript's text
-        const item = await (await fetch('/api/items/' + id)).json();
-        renderText(box, item); index(); toast('Word removed');
-      } else { w.textContent = text; w.classList.add('fixed'); toast('Saved'); }
-      refresh();
+      // redraw: deleting or adding words shifts the positions of the words after it
+      const item = await (await fetch('/api/items/' + id)).json();
+      const keep = box.scrollTop;
+      renderText(box, item); index(); box.scrollTop = keep;
+      toast(!text ? 'Word removed' : text.split(/\s+/).length > 1 ? 'Saved (words added)' : 'Saved');
+      refresh(); pollModel();
     };
     const onKey = e => { if (e.key === 'Enter') { e.preventDefault(); finish(true); } if (e.key === 'Escape') { e.preventDefault(); finish(false); } };
     const onBlur = () => finish(true);
@@ -375,6 +450,43 @@ function wirePlayer(body) {
   const speeds = [1, 1.25, 1.5, 2, 0.75], sp = body.querySelector('.speed'); let si = 0;
   sp.onclick = () => { si = (si + 1) % speeds.length; audio.playbackRate = speeds[si]; sp.textContent = speeds[si] + '×'; };
 }
+
+/* ---------- learned fixes ---------- */
+const dlg = $('#fixesDlg');
+const post = (url, body) => fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {}) });
+function pairHtml(r) {
+  return `<div class="pair"><s>${esc(r.from)}</s><span class="arrow">←</span>${esc(r.to)}` +
+         (r.count ? `<span class="n">corrected ${r.count}×</span>` : '') + `</div>`;
+}
+function drawFixes(v) {
+  $('#sugList').innerHTML = v.suggestions.length ? v.suggestions.map((r, i) =>
+    `<div class="rule">${pairHtml(r)}<div class="btns"><button class="b primary" data-on="${i}">Turn on</button>` +
+    `<button class="b" data-dis="${i}">Dismiss</button></div></div>`).join('')
+    : `<div class="none">None yet. Correct the same word the same way twice and it will appear here.</div>`;
+  $('#ruleList').innerHTML = v.rules.length ? v.rules.map((r, i) =>
+    `<div class="rule">${pairHtml(r)}<div class="btns"><button class="b danger" data-rm="${i}">Remove</button></div></div>`).join('')
+    : `<div class="none">No active fixes.</div>`;
+  const act = async (p) => { const r = await p; if (r.ok) drawFixes(await r.json()); else toast((await r.json()).detail || 'Error'); pollModel(); };
+  dlg.querySelectorAll('[data-on]').forEach(b => b.onclick = () => { const s = v.suggestions[+b.dataset.on]; act(post('/api/fixes', s)); });
+  dlg.querySelectorAll('[data-dis]').forEach(b => b.onclick = () => act(post('/api/fixes/dismiss', v.suggestions[+b.dataset.dis])));
+  dlg.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => act(post('/api/fixes/remove', v.rules[+b.dataset.rm])));
+  $('#applyPast').disabled = !v.rules.length;
+}
+$('#fixesBtn').onclick = async () => { drawFixes(await (await fetch('/api/fixes')).json()); dlg.showModal(); };
+$('#closeFixes').onclick = () => dlg.close();
+dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); });
+$('#addFix').onsubmit = async e => {
+  e.preventDefault();
+  const f = e.target, r = await post('/api/fixes', { from: f.from.value, to: f.to.value });
+  if (!r.ok) { toast((await r.json()).detail || 'Could not add'); return; }
+  drawFixes(await r.json()); f.reset(); toast('Fix added');
+};
+$('#applyPast').onclick = async () => {
+  const r = await (await post('/api/fixes/apply')).json();
+  toast(r.words ? `Fixed ${r.words} word${r.words > 1 ? 's' : ''} in ${r.notes} transcript${r.notes > 1 ? 's' : ''}` : 'Nothing to change');
+  if (openId) open(openId, true);
+  refresh();
+};
 
 /* ---------- keyboard: space = play/pause the open transcript ---------- */
 document.addEventListener('keydown', e => {

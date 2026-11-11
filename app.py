@@ -20,12 +20,14 @@ import uvicorn
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 
+from fixes import Fixes, spread
 from transcriber import SR, Transcriber, load_audio
 
 HERE = Path(__file__).parent
 # Every transcript lives in DATA_DIR/<id>/ : meta.json + audio.m4a
 DATA_DIR = Path(os.environ.get("DATA_DIR", HERE / "data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+fixes = Fixes(DATA_DIR / "fixes.json")
 
 app = FastAPI()
 engine = Transcriber()
@@ -116,6 +118,8 @@ def worker() -> None:
                 for s in segs
             ]
             item["duration"] = round(len(audio) / SR, 2)
+            item["model_text"] = full_text(item)  # untouched model output, kept for measuring accuracy later
+            item["auto_fixes"] = fixes.apply(item)
             item["status"] = "done"
             src.unlink(missing_ok=True)
         except Exception as e:  # noqa: BLE001
@@ -134,7 +138,12 @@ def index():
 
 @app.get("/api/status")
 def status():
-    return {**model_state, "queued": sum(1 for i in items.values() if i["status"] in ("queued", "working"))}
+    verified = [i for i in items.values() if i.get("verified")]
+    return {**model_state,
+            "queued": sum(1 for i in items.values() if i["status"] in ("queued", "working")),
+            "verified": len(verified),
+            "verified_seconds": round(sum(i.get("duration", 0) for i in verified), 1),
+            "suggestions": len(fixes.suggestions())}
 
 
 @app.post("/api/upload")
@@ -166,7 +175,8 @@ def list_items(q: str = ""):
         if q and q in text:
             k = text.index(q)
             hit = ("…" if k > 40 else "") + text[max(0, k - 40): k + len(q) + 40] + "…"
-        out.append({k: it.get(k) for k in ("id", "name", "created", "status", "progress", "duration", "seconds", "error")}
+        out.append({k: it.get(k) for k in ("id", "name", "created", "status", "progress", "duration", "seconds",
+                                           "error", "verified", "auto_fixes")}
                    | {"preview": hit or text[:140]})
     return out
 
@@ -192,13 +202,19 @@ def item_audio(iid: str):
 
 
 @app.patch("/api/items/{iid}")
-def rename(iid: str, body: dict = Body(...)):
+def update_item(iid: str, body: dict = Body(...)):
+    """Rename ({"name": ...}) and/or mark as checked by a person ({"verified": true})."""
     it = get_item(iid)
     name = str(body.get("name", "")).strip()
     if name:
         it["name"] = name[:200]
-        save(it)
-    return {"ok": True}
+    if "verified" in body:
+        if it["status"] != "done":
+            raise HTTPException(409, "Only finished transcripts can be verified.")
+        it["verified"] = bool(body["verified"])
+        it["verified_at"] = datetime.now().isoformat(timespec="seconds") if it["verified"] else None
+    save(it)
+    return {"ok": True, "verified": it.get("verified", False)}
 
 
 @app.put("/api/items/{iid}/word")
@@ -212,15 +228,62 @@ def edit_word(iid: str, body: dict = Body(...)):
         words[w]  # bounds check
     except (KeyError, IndexError, ValueError, TypeError):
         raise HTTPException(400, "bad word reference")
-    text = " ".join(str(body.get("text", "")).split())
-    if text:
-        words[w]["text"] = text
+    parts = str(body.get("text", "")).split()
+    before = words[w]["text"]
+    if parts:
+        # several words typed = the model missed some; they share this word's time span
+        words[w:w + 1] = spread(words[w], parts, fixed=True)
+        fixes.record(before, " ".join(parts))
     else:
         words.pop(w)
     seg["text"] = " ".join(x["text"] for x in words)
     it["edited"] = True
     save(it)
     return seg
+
+
+# ---------- learned fixes ----------
+
+@app.get("/api/fixes")
+def fixes_view():
+    return fixes.view()
+
+
+@app.post("/api/fixes")
+def fixes_add(body: dict = Body(...)):
+    try:
+        fixes.add_rule(str(body.get("from", "")), str(body.get("to", "")))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return fixes.view()
+
+
+@app.post("/api/fixes/remove")
+def fixes_remove(body: dict = Body(...)):
+    fixes.remove_rule(str(body.get("from", "")))
+    return fixes.view()
+
+
+@app.post("/api/fixes/dismiss")
+def fixes_dismiss(body: dict = Body(...)):
+    fixes.dismiss(str(body.get("from", "")), str(body.get("to", "")))
+    return fixes.view()
+
+
+@app.post("/api/fixes/apply")
+def fixes_apply():
+    """Apply enabled fixes to past transcripts (verified ones are left exactly as you checked them)."""
+    words_changed = notes_changed = 0
+    for it in list(items.values()):
+        if it["status"] != "done" or it.get("verified"):
+            continue
+        n = fixes.apply(it)
+        if n:
+            it["auto_fixes"] = it.get("auto_fixes", 0) + n
+            save(it)
+            words_changed += n
+            notes_changed += 1
+    return {"words": words_changed, "notes": notes_changed}
 
 
 @app.delete("/api/items/{iid}")

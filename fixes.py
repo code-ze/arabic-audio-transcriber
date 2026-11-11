@@ -204,6 +204,29 @@ def merge_alignment(words: list[dict], aligned: list, seg_dur: float) -> list[di
     return out
 
 
+def timed_from_alignment(text: str, aligned: list, start: float, end: float) -> list[dict]:
+    """Words of `text` with aligner times (relative to `start`); gaps the aligner
+    couldn't place are filled evenly between their placed neighbours."""
+    words = text.split()
+    out = [{"start": round(start + a[0], 2), "end": round(start + a[1], 2), "text": w} if a else None
+           for w, a in zip(words, aligned)]
+    i = 0
+    while i < len(out):
+        if out[i] is not None:
+            i += 1
+            continue
+        j = i
+        while j < len(out) and out[j] is None:
+            j += 1
+        lo = out[i - 1]["end"] if i > 0 else start
+        hi = out[j]["start"] if j < len(out) else end
+        hi = max(hi, lo + 0.1 * (j - i))
+        for k, w in enumerate(spread({"start": lo, "end": hi}, words[i:j], guess=True)):
+            out[i + k] = w
+        i = j
+    return out
+
+
 def spread(word: dict, parts: list[str], **flags) -> list[dict]:
     """Replace one timed word with len(parts) words sharing its time span evenly."""
     s, e = word["start"], word["end"]

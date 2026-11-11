@@ -1,8 +1,8 @@
 """Accuracy of the model on your verified lines: word and character error rates.
 
 Text is normalized the usual way for Arabic ASR scoring (diacritics and tatweel
-removed, alef/hamza forms collapsed, punctuation dropped) so spelling variants
-that sound the same don't count as errors.
+removed, alef/hamza forms and ة/ه collapsed, punctuation dropped) so spelling
+variants that sound the same don't count as errors.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ _PUNCT = re.compile(r"[^\w\s]|_", re.UNICODE)
 def normalize(text: str) -> str:
     t = _DIACRITICS.sub("", text)
     t = re.sub("[أإآٱ]", "ا", t)
-    t = t.replace("ى", "ي").replace("ؤ", "و").replace("ئ", "ي")
+    t = t.replace("ى", "ي").replace("ؤ", "و").replace("ئ", "ي").replace("ة", "ه")
     t = _PUNCT.sub(" ", t.lower())
     return " ".join(t.split())
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import threading
@@ -20,8 +21,9 @@ import uvicorn
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 
+import importer
 from aligner import Aligner
-from fixes import Fixes, merge_alignment, realign, spread
+from fixes import Fixes, merge_alignment, realign, spread, timed_from_alignment
 from metrics import score
 from transcriber import SR, Transcriber, load_audio
 
@@ -68,8 +70,11 @@ def load_all() -> None:
             for s in segs:  # notes verified before lines could be checked one by one
                 s["verified"] = True
             save(item)
-        if item["status"] in ("queued", "working"):
-            if find_source(item["id"]):
+        if item["status"] in ("queued", "working", "downloading"):
+            if item.get("source_url") and not find_source(item["id"]):
+                item.update(status="queued", progress=0.0)  # import interrupted: start the download again
+                work.put(("import", item["id"]))
+            elif find_source(item["id"]):
                 item.update(status="queued", progress=0.0)
                 work.put(("transcribe", item["id"]))
             else:
@@ -80,7 +85,7 @@ def load_all() -> None:
 
 
 def find_source(iid: str) -> Path | None:
-    return next(iter(item_dir(iid).glob("source.*")), None)
+    return next((p for p in item_dir(iid).glob("source.*") if p.suffix not in (".vtt", ".part", ".ytdl")), None)
 
 
 def full_text(item: dict) -> str:
@@ -107,10 +112,19 @@ def worker() -> None:
         try:
             if kind == "align":
                 align_item(iid)
+            elif kind == "import":
+                import_item(iid)
             else:
                 transcribe_item(iid)
         except Exception as e:  # noqa: BLE001  never let one job kill the worker
             print(f"{kind} job for {iid} failed: {e}")
+        finally:
+            # give cached GPU memory back between jobs so other apps (and training) can use it
+            try:
+                import torch
+                torch.cuda.empty_cache()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def queue_align(iid: str) -> None:
@@ -141,12 +155,83 @@ def align_item(iid: str) -> None:
     save(item)
 
 
+def import_item(iid: str) -> None:
+    """Download from the item's link, then transcribe (from human subtitles when the video has them)."""
+    item = items.get(iid)
+    if not item:
+        return
+    item.update(status="downloading", progress=0.0)
+    save(item)
+    t0 = time.time()
+    try:
+        got = importer.fetch(item["source_url"], item_dir(iid), progress=lambda p: item.update(progress=p))
+        item["name"] = got["title"][:200]
+        cues = importer.parse_vtt(got["subtitles"]) if got["subtitles"] else []
+        if got["subtitles"]:
+            got["subtitles"].unlink(missing_ok=True)
+        if cues:
+            transcribe_from_subtitles(item, got["source"], importer.group_cues(cues), t0)
+            return
+        item["status"] = "queued"
+        save(item)
+    except Exception as e:  # noqa: BLE001
+        item.update(status="error", error=("Couldn't import this link: " + str(e))[-500:],
+                    seconds=round(time.time() - t0, 1))
+        save(item)
+        return
+    transcribe_item(iid)  # no human subtitles: transcribe with the model as usual
+
+
+def make_playback_copy(src: Path, iid: str) -> None:
+    """Compact AAC copy for the player (plays in every browser)."""
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", str(src), "-vn",
+         "-ac", "1", "-c:a", "aac", "-b:a", "64k", str(item_dir(iid) / "audio.m4a")],
+        check=True, capture_output=True,
+    )
+
+
+def transcribe_from_subtitles(item: dict, src: Path, groups: list, t0: float) -> None:
+    """Lines come from the video's human subtitles; the aligner times each word, and the
+    model's own transcript of every line is kept so accuracy can be measured."""
+    iid = item["id"]
+    item.update(status="working", progress=0.0)
+    save(item)
+    try:
+        audio = load_audio(str(src))
+        make_playback_copy(src, iid)
+        dur = len(audio) / SR
+        groups = [(max(0.0, s - 0.15), min(dur, e + 0.15), t) for s, e, t in groups if s < dur]
+        spans = [(int(s * SR), int(e * SR)) for s, e, _ in groups]
+        n = len(spans)
+
+        def prog(done, total):
+            item["progress"] = 0.9 * done / total
+
+        model = engine.run_spans(audio, spans, prog)
+        segments = []
+        for k, ((s, e, text), (mtext, _)) in enumerate(zip(groups, model)):
+            aligned = aligner.align(audio[int(s * SR): int(e * SR)], text)
+            segments.append({"start": round(s, 2), "end": round(e, 2), "text": text,
+                             "words": timed_from_alignment(text, aligned, s, e), "model": mtext})
+            item["progress"] = 0.9 + 0.1 * (k + 1) / n
+        item["segments"] = segments
+        item["model_text"] = "\n".join(seg.pop("model") for seg in segments)
+        item.update(duration=round(dur, 2), from_subtitles=True, status="done")
+        src.unlink(missing_ok=True)
+    except Exception as e:  # noqa: BLE001
+        item.update(status="error", error=str(e)[-500:])
+    finally:
+        item["seconds"] = round(time.time() - t0, 1)
+        save(item)
+
+
 def transcribe_item(iid: str) -> None:
     item = items.get(iid)
     src = find_source(iid)
     if not item or not src:
         return
-    item["status"] = "working"
+    item.update(status="working", progress=0.0)
     save(item)
     t0 = time.time()
     try:
@@ -154,12 +239,7 @@ def transcribe_item(iid: str) -> None:
             item["progress"] = done / total
 
         audio = load_audio(str(src))
-        # compact copy for playback (AAC plays in every browser)
-        subprocess.run(
-            ["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", str(src), "-vn",
-             "-ac", "1", "-c:a", "aac", "-b:a", "64k", str(item_dir(iid) / "audio.m4a")],
-            check=True, capture_output=True,
-        )
+        make_playback_copy(src, iid)
         segs = engine.transcribe(str(src), progress=prog, audio=audio)
         item["segments"] = [
             {"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text,
@@ -280,6 +360,34 @@ async def upload(file: UploadFile = File(...)):
     return {"id": iid}
 
 
+@app.post("/api/import")
+def import_link(body: dict = Body(...)):
+    """Queue a link (YouTube, Ayn, ...) for download + transcription."""
+    url = str(body.get("url", "")).strip()
+    if not re.match(r"^https?://\S+$", url):
+        raise HTTPException(400, "Paste a full link starting with http:// or https://")
+    iid = uuid.uuid4().hex[:12]
+    item_dir(iid).mkdir(parents=True)
+    item = {"id": iid, "name": url, "source_url": url, "created": datetime.now().isoformat(timespec="microseconds"),
+            "status": "queued", "progress": 0.0}
+    items[iid] = item
+    save(item)
+    work.put(("import", iid))
+    return {"id": iid}
+
+
+@app.post("/api/items/{iid}/retry")
+def retry(iid: str):
+    """Try a failed import again (audio already downloaded is reused)."""
+    it = get_item(iid)
+    if it["status"] != "error" or not it.get("source_url"):
+        raise HTTPException(409, "Only failed imports can be retried.")
+    it.update(status="queued", progress=0.0, error=None)
+    save(it)
+    work.put(("import", iid))
+    return {"ok": True}
+
+
 @app.get("/api/items")
 def list_items(q: str = ""):
     q = q.strip()
@@ -293,7 +401,7 @@ def list_items(q: str = ""):
             k = text.index(q)
             hit = ("…" if k > 40 else "") + text[max(0, k - 40): k + len(q) + 40] + "…"
         out.append({k: it.get(k) for k in ("id", "name", "created", "status", "progress", "duration", "seconds",
-                                           "error", "verified", "auto_fixes")}
+                                           "error", "verified", "auto_fixes", "from_subtitles", "source_url")}
                    | {"preview": hit or text[:140],
                       "syncing": sum(1 for s in it.get("segments", []) if s.get("pending_align"))})
     return out

@@ -43,6 +43,13 @@
   @keyframes pulse { 50% { opacity: .35; } }
   @media (max-width: 560px) { .inputs { grid-template-columns: 1fr; } #rec { padding: 14px; flex-direction: row; } }
 
+  .importrow { display: flex; gap: 8px; margin: -6px 0 4px; }
+  .importrow input { flex: 1; min-width: 0; font: inherit; padding: 9px 12px; border-radius: 10px;
+                     border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  .importrow input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  .importhint { font-size: 12.5px; color: var(--muted); margin-bottom: 18px; }
+  .sbadge { display: inline-block; margin-left: 8px; font-size: 11.5px; color: var(--muted);
+            border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; vertical-align: 1px; }
   .bar-row { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
   #search { flex: 1; min-width: 200px; font: inherit; padding: 9px 12px; border-radius: 10px;
             border: 1px solid var(--line); background: var(--card); color: var(--ink); }
@@ -180,6 +187,11 @@
     </div>
     <button id="rec" title="Record from your microphone"><span class="mic"></span><span id="recLabel">Record</span></button>
   </div>
+  <form id="importForm" class="importrow">
+    <input id="importUrl" type="url" placeholder="…or paste a link: YouTube, Ayn (Oman TV) episode, …" dir="ltr" required>
+    <button class="b" type="submit">Import</button>
+  </form>
+  <div class="importhint">If the video has human-made Arabic subtitles, they're used as the transcript and every word is synced to the audio. Only import media you're allowed to use; it stays on this computer.</div>
 
   <div class="bar-row">
     <input id="search" type="search" placeholder="Search all transcripts…  ابحث" dir="auto">
@@ -271,6 +283,18 @@ async function send(file) {
   } catch { toast('Upload failed: ' + file.name); }
 }
 
+/* ---------- import from a link ---------- */
+$('#importForm').onsubmit = async e => {
+  e.preventDefault();
+  const url = $('#importUrl').value.trim();
+  const r = await fetch('/api/import', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url }) });
+  if (!r.ok) { toast((await r.json()).detail || 'Could not import that link'); return; }
+  $('#importUrl').value = '';
+  autoOpen.add((await r.json()).id);
+  toast('Importing… this can take a few minutes for long videos');
+  refresh();
+};
+
 /* ---------- microphone ---------- */
 let rec = null, recChunks = [], recT0 = 0, recTimer = 0;
 $('#rec').onclick = async () => {
@@ -334,25 +358,30 @@ async function refresh(rebuildOrder) {
 
 function renderHead(c) {
   const d = c.data;
-  const labels = { queued: 'Waiting in queue…', working: 'Transcribing… ' + Math.round((d.progress || 0) * 100) + '%', error: 'Failed' };
+  const labels = { queued: 'Waiting in queue…', working: 'Transcribing… ' + Math.round((d.progress || 0) * 100) + '%',
+                   downloading: 'Downloading… ' + Math.round((d.progress || 0) * 100) + '%', error: 'Failed' };
   const meta = d.status === 'done'
     ? (d.syncing ? `<span title="Fitting your corrected words to the audio">syncing words to audio…</span> · ` : '') + `${fmt(d.duration)} · ${when(d.created)}`
     : labels[d.status] || '';
   let preview = esc(d.preview || '');
   if (searchQ) preview = preview.split(esc(searchQ)).join(`<mark>${esc(searchQ)}</mark>`);
   let extra = '';
-  if (d.status === 'queued' || d.status === 'working')
+  if (d.status === 'queued' || d.status === 'working' || d.status === 'downloading')
     extra = `<div class="progress ${d.status === 'queued' || !d.progress ? 'wait' : ''}"><i style="width:${Math.round((d.progress || 0) * 100)}%"></i></div>`;
   else if (d.status === 'error') extra = `<div class="err">${esc(d.error || 'Error')}</div>`;
   else if (d.status === 'done' && !d.preview) extra = `<div class="preview">No speech detected.</div>`;
   let head = c.el.querySelector('.head');
   if (!head) { head = document.createElement('div'); head.className = 'head'; c.el.prepend(head); head.onclick = () => open(d.id); }
-  head.innerHTML = `<span class="name">${esc(d.name)}${d.verified ? '<span class="vbadge">✓ Verified</span>' : ''}</span><span class="meta">${meta}</span>` +
+  head.innerHTML = `<span class="name">${esc(d.name)}${d.verified ? '<span class="vbadge">✓ Verified</span>' : ''}` +
+    `${d.from_subtitles ? '<span class="sbadge" title="Transcript taken from the video\'s own subtitles">subtitles</span>' : ''}</span><span class="meta">${meta}</span>` +
     (d.preview ? `<div class="preview">${preview}</div>` : '') + extra;
+  if (d.status !== 'error') c.el.querySelector('.body.errbody')?.remove();
   if (d.status === 'error' && !c.el.querySelector('.body')) {
-    const b = document.createElement('div'); b.className = 'body';
-    b.innerHTML = `<div class="actions"><span class="spacer"></span><button class="b danger">Delete</button></div>`;
-    b.querySelector('button').onclick = () => del(d.id);
+    const b = document.createElement('div'); b.className = 'body errbody';
+    b.innerHTML = `<div class="actions">${d.source_url ? '<button class="b" data-r>Retry</button>' : ''}<span class="spacer"></span><button class="b danger" data-d>Delete</button></div>`;
+    b.querySelector('[data-d]').onclick = () => del(d.id);
+    const r = b.querySelector('[data-r]');
+    if (r) r.onclick = async () => { await post(`/api/items/${d.id}/retry`); refresh(); };
     c.el.append(b);
   }
 }
@@ -686,7 +715,7 @@ document.addEventListener('keydown', e => {
 /* ---------- polling ---------- */
 async function loop() {
   await Promise.all([pollModel(), refresh()]);
-  const busy = [...cards.values()].some(c => c.data && (c.data.status === 'queued' || c.data.status === 'working' || c.data.syncing));
+  const busy = [...cards.values()].some(c => c.data && (['queued', 'working', 'downloading'].includes(c.data.status) || c.data.syncing));
   setTimeout(loop, busy || $('#dot').className !== 'dot ready' ? 1000 : 6000);
 }
 loop();

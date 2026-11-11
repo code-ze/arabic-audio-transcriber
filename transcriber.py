@@ -132,6 +132,11 @@ class Transcriber:
         sr = self._proc.feature_extractor.sampling_rate
         if sr != SR:
             raise RuntimeError(f"Model expects {sr} Hz audio, engine is set up for {SR} Hz")
+        if torch.cuda.is_available():
+            # Hard cap so we get a (recoverable) out-of-memory error instead of Windows silently
+            # moving GPU memory into system RAM, which makes everything ~50x slower.
+            frac = float(os.environ.get("GPU_MEMORY_FRACTION", "0.75"))
+            torch.cuda.set_per_process_memory_fraction(frac)
         self._model = VoxtralRealtimeForConditionalGeneration.from_pretrained(
             MODEL_ID, dtype=torch.bfloat16, device_map="auto"
         )
@@ -156,19 +161,42 @@ class Transcriber:
             results.append((text, words))
         return results
 
-    def transcribe(self, path: str, progress=None, audio: np.ndarray | None = None) -> list[Segment]:
-        if audio is None:
-            audio = load_audio(path)
-        spans = [(s, e) for s, e in split_on_silence(audio)
-                 if np.sqrt(np.mean(audio[s:e] ** 2)) >= 1e-4]  # drop digital silence
+    def _run_safe(self, pieces: list[np.ndarray]) -> list[tuple[str, list[Word]]]:
+        """_run, but if the GPU runs out of memory, free the cache and retry in halves."""
+        import torch
+
+        try:
+            return self._run(pieces)
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            if len(pieces) == 1:
+                raise
+            mid = len(pieces) // 2
+            return self._run_safe(pieces[:mid]) + self._run_safe(pieces[mid:])
+
+    def run_spans(self, audio: np.ndarray, spans: list[tuple[int, int]], progress=None) -> list[tuple[str, list[Word]]]:
+        """Transcribe the given (start, end) sample ranges, batched on the GPU."""
+        import torch
+
         results: list[tuple[str, list[Word]]] = []
         with self._lock:  # one GPU job at a time
             self.load()
             for i in range(0, len(spans), BATCH):
                 group = spans[i:i + BATCH]
-                results += self._run([audio[s:e] for s, e in group])
+                results += self._run_safe([audio[s:e] for s, e in group])
+                # Batches differ in size; without this the cache fragments and keeps growing on long
+                # recordings until Windows spills GPU memory into system RAM and everything crawls.
+                torch.cuda.empty_cache()
                 if progress:
                     progress(min(i + BATCH, len(spans)), len(spans))
+        return results
+
+    def transcribe(self, path: str, progress=None, audio: np.ndarray | None = None) -> list[Segment]:
+        if audio is None:
+            audio = load_audio(path)
+        spans = [(s, e) for s, e in split_on_silence(audio)
+                 if np.sqrt(np.mean(audio[s:e] ** 2)) >= 1e-4]  # drop digital silence
+        results = self.run_spans(audio, spans, progress)
         segments = []
         for (s, e), (text, words) in zip(spans, results):
             if not text:
